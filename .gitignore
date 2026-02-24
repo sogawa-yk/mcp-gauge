@@ -18,3 +18,18 @@ coverage.xml
 *.cover
 .pytest_cache/
 .ruff_cache/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Database
+*.db
+*.sqlite3
+
+# OS
+.DS_Store
+
+# Steering (task-specific working documents)
+.steering/
