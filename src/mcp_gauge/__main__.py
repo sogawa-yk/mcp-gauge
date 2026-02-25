@@ -1,7 +1,6 @@
 """MCP Gaugeエントリーポイント。python -m mcp_gauge で起動。"""
 
-import asyncio
-
+import anyio
 from mcp.server.stdio import stdio_server
 
 from mcp_gauge.config import GaugeConfig
@@ -25,4 +24,4 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    anyio.run(main)

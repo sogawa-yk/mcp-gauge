@@ -263,8 +263,11 @@ class TestMigration:
                 "(id, server_command, server_args, status, started_at) "
                 "VALUES (?, ?, ?, ?, ?)",
                 (
-                    "sess-old", "python -m server", "[]",
-                    "running", "2026-01-01T00:00:00Z",
+                    "sess-old",
+                    "python -m server",
+                    "[]",
+                    "running",
+                    "2026-01-01T00:00:00Z",
                 ),
             )
             await db.commit()

@@ -91,9 +91,7 @@ class TraceStorage:
                 "ADD COLUMN transport_type TEXT NOT NULL DEFAULT 'stdio'"
             )
         if "server_url" not in columns:
-            await db.execute(
-                "ALTER TABLE trace_sessions ADD COLUMN server_url TEXT"
-            )
+            await db.execute("ALTER TABLE trace_sessions ADD COLUMN server_url TEXT")
 
     async def recover_sessions(self) -> int:
         """status='running'のセッションを'failed'に更新する。"""

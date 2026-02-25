@@ -30,6 +30,7 @@ class ConnectionParams(BaseModel):
     server_args: list[str] = []
     server_url: str | None = None
     headers: dict[str, str] = {}
+    env: dict[str, str] | None = None
 
     def display_target(self) -> str:
         """ログ/エラー用の接続先表示名を返す。"""

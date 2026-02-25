@@ -33,9 +33,7 @@ class SessionManager:
         client = MCPClientWrapper(timeout_sec=self.mcp_timeout_sec)
         tools = await client.connect(params)
 
-        session_id = await self.trace_engine.start_session(
-            params, scenario_id
-        )
+        session_id = await self.trace_engine.start_session(params, scenario_id)
         self._clients[session_id] = client
 
         tool_defs = [
