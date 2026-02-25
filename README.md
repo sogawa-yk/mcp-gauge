@@ -77,6 +77,148 @@ MCP Gaugeは7つのMCPツールを提供します。
 | **gauge_compare** | 2つのトレースセッション（変更前後）を比較し、各メトリクスの改善・悪化を判定します。 |
 | **gauge_report** | 複数のトレースセッションから統合レポートを生成し、平均メトリクスと改善推奨事項を返します。 |
 
+## セットアップ
+
+### インストール
+
+```bash
+# uvでインストール
+uv pip install -e .
+
+# 開発用依存関係も含める場合
+uv pip install -e ".[dev]"
+```
+
+### MCPクライアントへの登録
+
+Claude Codeの場合、`.mcp.json` に以下を追加します。
+
+```json
+{
+  "mcpServers": {
+    "mcp-gauge": {
+      "command": "uv",
+      "args": ["run", "--directory", "/path/to/mcp-gauge", "python", "-m", "mcp_gauge"]
+    }
+  }
+}
+```
+
+### 環境変数
+
+| 変数名 | 説明 | デフォルト |
+|--------|------|-----------|
+| `MCP_GAUGE_DB_PATH` | トレースデータの保存先 | `~/.mcp-gauge/gauge.db` |
+| `MCP_GAUGE_TIMEOUT` | MCP接続タイムアウト（秒） | `30` |
+
+## 使い方
+
+### ローカルサーバーのテスト（stdio）
+
+ローカルのMCPサーバーをテストする基本的な流れです。
+
+```
+# 1. ツール説明文をリンティング
+gauge_lint(server_command="python", server_args=["-m", "my_mcp_server"])
+
+# 2. テスト対象サーバーに接続
+gauge_connect(server_command="python", server_args=["-m", "my_mcp_server"])
+# → session_id と利用可能なツール一覧が返る
+
+# 3. ツールをプロキシ経由で呼び出し（自動的にトレース記録）
+gauge_proxy_call(session_id="...", tool_name="create", arguments={"name": "test"})
+
+# 4. 接続を切断してサマリーを取得
+gauge_disconnect(session_id="...", task_success=true)
+
+# 5. 成功条件で評価
+gauge_evaluate(session_id="...", success_criteria={
+  "max_steps": 5,
+  "required_tools": ["create", "list"],
+  "must_succeed": true
+})
+```
+
+### リモートサーバーのテスト（Streamable HTTP / SSE）
+
+リモートで稼働するMCPサーバーにも接続できます。
+
+**Streamable HTTP（推奨）:**
+
+```
+gauge_connect(
+  server_url="https://example.com/mcp",
+  headers={"Authorization": "Bearer token123"}
+)
+```
+
+`server_url` を指定すると、トランスポートは自動的に `streamable_http` が選択されます。
+
+**SSE:**
+
+```
+gauge_connect(
+  server_url="https://example.com/sse",
+  transport_type="sse",
+  headers={"Authorization": "Bearer token123"}
+)
+```
+
+SSEトランスポートを使う場合は `transport_type="sse"` を明示的に指定してください。
+
+**リモートサーバーのリンティング:**
+
+```
+gauge_lint(
+  server_url="https://example.com/mcp",
+  headers={"Authorization": "Bearer token123"}
+)
+```
+
+### 接続パラメータ
+
+`gauge_connect` と `gauge_lint` は共通の接続パラメータを受け取ります。
+
+| パラメータ | 説明 |
+|-----------|------|
+| `server_command` | 対象サーバーの起動コマンド（stdio時に必須） |
+| `server_args` | 起動引数のリスト（デフォルト: `[]`） |
+| `server_url` | リモートサーバーのURL（SSE/Streamable HTTP時に必須） |
+| `transport_type` | トランスポートの種類: `stdio`, `sse`, `streamable_http`（自動判定あり） |
+| `headers` | リモート接続時のHTTPヘッダー（デフォルト: `{}`） |
+
+`transport_type` を省略した場合、`server_url` が指定されていれば `streamable_http`、それ以外は `stdio` が自動的に選択されます。
+
+### 変更前後の比較
+
+ツール説明文を改善した前後の効果を定量的に比較できます。
+
+```
+# 改善前のトレースをベースラインとして記録
+gauge_connect(server_command="python", server_args=["-m", "my_server"])
+# ... ツール呼び出し ...
+gauge_disconnect(session_id="baseline-session")
+
+# ツール説明文を改善した後、同じタスクを再実行
+gauge_connect(server_command="python", server_args=["-m", "my_server"])
+# ... ツール呼び出し ...
+gauge_disconnect(session_id="current-session")
+
+# 比較
+gauge_compare(
+  baseline_trace_id="baseline-session",
+  current_trace_id="current-session"
+)
+```
+
+### レポート生成
+
+複数のテスト結果を統合して分析できます。
+
+```
+gauge_report(trace_ids=["session-1", "session-2", "session-3"])
+```
+
 ## 計測するメトリクス
 
 MCP Gaugeは以下のメトリクスを自動計測します。
