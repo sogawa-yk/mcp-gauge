@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 from mcp.server import Server
-from mcp.types import TextContent, Tool
+from mcp.types import GetPromptResult, Prompt, TextContent, Tool
 
 from mcp_gauge.config import GaugeConfig
 from mcp_gauge.engines.compare import CompareEngine
@@ -23,6 +23,8 @@ from mcp_gauge.exceptions import (
 from mcp_gauge.infra.storage import TraceStorage
 from mcp_gauge.models.scenario import SuccessCriteria
 from mcp_gauge.models.trace import ConnectionParams, TransportType
+from mcp_gauge.prompts import PROMPTS
+from mcp_gauge.prompts import get_prompt as resolve_prompt
 
 
 class GaugeServer:
@@ -95,8 +97,7 @@ class GaugeServer:
                             "headers": {
                                 "type": "object",
                                 "description": (
-                                    "リモート接続時のHTTPヘッダー。"
-                                    "デフォルト: {}"
+                                    "リモート接続時のHTTPヘッダー。デフォルト: {}"
                                 ),
                             },
                         },
@@ -146,8 +147,7 @@ class GaugeServer:
                             "headers": {
                                 "type": "object",
                                 "description": (
-                                    "リモート接続時のHTTPヘッダー。"
-                                    "デフォルト: {}"
+                                    "リモート接続時のHTTPヘッダー。デフォルト: {}"
                                 ),
                             },
                             "scenario_id": {
@@ -300,6 +300,16 @@ class GaugeServer:
                 ),
             ]
 
+        @self.mcp.list_prompts()  # type: ignore[no-untyped-call, untyped-decorator]
+        async def list_prompts() -> list[Prompt]:
+            return PROMPTS
+
+        @self.mcp.get_prompt()  # type: ignore[no-untyped-call, untyped-decorator]
+        async def get_prompt(
+            name: str, arguments: dict[str, str] | None
+        ) -> GetPromptResult:
+            return resolve_prompt(name, arguments)
+
         @self.mcp.call_tool()  # type: ignore[untyped-decorator]
         async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             try:
@@ -395,6 +405,7 @@ class GaugeServer:
         transport_type_str = arguments.get("transport_type")
         headers = arguments.get("headers", {})
         server_args = arguments.get("server_args", [])
+        env = arguments.get("env")
 
         if transport_type_str:
             transport_type = TransportType(transport_type_str)
@@ -408,10 +419,14 @@ class GaugeServer:
                 "server_command",
                 "stdioトランスポートではserver_commandが必須です",
             )
-        if transport_type in (
-            TransportType.SSE,
-            TransportType.STREAMABLE_HTTP,
-        ) and not server_url:
+        if (
+            transport_type
+            in (
+                TransportType.SSE,
+                TransportType.STREAMABLE_HTTP,
+            )
+            and not server_url
+        ):
             raise InvalidScenarioError(
                 "server_url",
                 f"{transport_type}トランスポートではserver_urlが必須です",
@@ -423,6 +438,7 @@ class GaugeServer:
             server_args=server_args,
             server_url=server_url,
             headers=headers,
+            env=env,
         )
 
     async def _handle_lint(self, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -440,9 +456,7 @@ class GaugeServer:
     async def _handle_connect(self, arguments: dict[str, Any]) -> dict[str, Any]:
         params = self._build_connection_params(arguments)
         scenario_id = arguments.get("scenario_id")
-        session_id, tools = await self.session_manager.connect(
-            params, scenario_id
-        )
+        session_id, tools = await self.session_manager.connect(params, scenario_id)
         return {"session_id": session_id, "tools": tools}
 
     async def _handle_proxy_call(self, arguments: dict[str, Any]) -> dict[str, Any]:
