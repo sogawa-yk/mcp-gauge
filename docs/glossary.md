@@ -45,15 +45,15 @@
 
 **英語表記**: Target MCP Server
 
-### テスト用LLM
+### 呼び出し元エージェント
 
-**定義**: E2Eテスト実行時にタスク指示を受けてツール呼び出しを行うLLM
+**定義**: MCP GaugeをMCPツールとして利用するコーディングエージェント（Claude Code等）
 
-**説明**: MCP GaugeのScenarioRunnerが利用する。シナリオのタスク指示とテスト対象サーバーのツール定義をLLMに渡し、LLMが自律的にツールを呼び出す。その呼び出しパターンをトレースする。
+**説明**: プロキシ型アーキテクチャにおいて、呼び出し元エージェント自身がLLMとしてツール呼び出し判断を行う。MCP Gaugeはプロキシとしてツール呼び出しを中継・記録するのみで、LLM APIへの直接依存がない。これにより、Claude Codeのサブスクリプションプランを含む任意のMCPクライアントから利用可能。
 
-**関連用語**: [シナリオ](#シナリオ), [トレース](#トレース)
+**関連用語**: [プロキシセッション](#プロキシセッション), [トレース](#トレース)
 
-**英語表記**: Test LLM
+**英語表記**: Calling Agent
 
 ### リンティング
 
@@ -92,7 +92,7 @@
 
 **定義**: テスト対象MCPサーバーへのツール呼び出しの記録・計測プロセス
 
-**説明**: TraceEngineがテスト対象サーバーへのリクエスト/レスポンスをプロキシし、ツール名・引数・結果・所要時間・エラー有無を記録する。E2Eテスト時にLLMのツール呼び出しパターンを可視化するために使用する。
+**説明**: SessionManagerがテスト対象サーバーへのリクエスト/レスポンスをプロキシし、TraceEngineがツール名・引数・結果・所要時間・エラー有無を記録する。呼び出し元エージェントのツール呼び出しパターンを可視化するために使用する。
 
 **関連用語**: [トレースセッション](#トレースセッション-tracesession), [トレースレコード](#トレースレコード-tracerecord), [トレースサマリー](#トレースサマリー-tracesummary)
 
@@ -100,22 +100,21 @@
 
 ### シナリオ
 
-**定義**: E2Eテストの実行単位。タスク指示と成功条件を定義したテストケース
+**定義**: E2Eテストの実行単位。成功条件を定義したテストケース
 
-**説明**: YAML/JSON形式で定義する。テスト用LLMにタスク指示を与え、ツール呼び出しパターンをトレースし、成功条件に基づいて合否判定する。
+**説明**: プロキシ型アーキテクチャでは、呼び出し元エージェントが自律的にツールを呼び出し、その結果を成功条件（gauge_evaluate）で事後評価する。シナリオ定義はYAML/JSON形式で、成功条件のテンプレートとして利用可能。
 
 **使用例**:
-```yaml
-id: create-and-list
-name: リソース作成と一覧取得
-task_instruction: |
-  リソースを作成し、一覧で確認してください
-success_criteria:
-  max_steps: 5
-  required_tools: [create_resource, list_resources]
+```json
+{
+  "max_steps": 5,
+  "required_tools": ["create_resource", "list_resources"],
+  "forbidden_tools": ["delete_resource"],
+  "must_succeed": true
+}
 ```
 
-**関連用語**: [成功条件](#成功条件), [テストスイート](#テストスイート)
+**関連用語**: [成功条件](#成功条件), [プロキシセッション](#プロキシセッション)
 
 **英語表記**: Scenario
 
@@ -193,13 +192,15 @@ success_criteria:
 
 **関連ドキュメント**: [アーキテクチャ設計書](./architecture.md#テクノロジースタック)
 
-### Anthropic SDK
+### プロキシセッション
 
-**定義**: Anthropic社のClaude APIを呼び出すための公式Python SDK
+**定義**: MCP Gaugeが対象MCPサーバーへのプロキシとして機能するセッション
 
-**本プロジェクトでの用途**: E2Eテスト時のテスト用LLM呼び出しに使用。tool_use機能でLLMにツール呼び出しを行わせる
+**説明**: gauge_connect → gauge_proxy_call (繰り返し) → gauge_disconnect のライフサイクルで管理される。SessionManagerが接続管理とトレース記録を担当する。呼び出し元エージェントはツール一覧を見て自律的にツールを呼び出す。
 
-**関連ドキュメント**: [アーキテクチャ設計書](./architecture.md#テクノロジースタック)
+**関連用語**: [呼び出し元エージェント](#呼び出し元エージェント), [トレースセッション](#トレースセッション-tracesession)
+
+**英語表記**: Proxy Session
 
 ### SQLite
 
@@ -285,17 +286,17 @@ MCPサーバーレイヤー (server.py)
 インフラレイヤー (infra/)
 ```
 
-**関連コンポーネント**: GaugeServer, LintEngine, TraceEngine, ScenarioRunner, TraceStorage
+**関連コンポーネント**: GaugeServer, LintEngine, TraceEngine, SessionManager, EvaluateEngine, TraceStorage
 
 **関連ドキュメント**: [アーキテクチャ設計書](./architecture.md#アーキテクチャパターン)
 
 ### MCPプロキシパターン
 
-**定義**: MCP GaugeがテストLLMとテスト対象MCPサーバーの間に立ち、ツール呼び出しを中継・記録するアーキテクチャパターン
+**定義**: MCP Gaugeが呼び出し元エージェントとテスト対象MCPサーバーの間に立ち、ツール呼び出しを中継・記録するアーキテクチャパターン
 
-**本プロジェクトでの適用**: ScenarioRunnerがLLMからのツール呼び出しリクエストを受け取り、TraceEngineで記録した後、テスト対象サーバーに転送する。レスポンスも同様に記録してからLLMに返す。
+**本プロジェクトでの適用**: SessionManagerがエージェントからのツール呼び出しリクエストを受け取り、TraceEngineで記録した後、テスト対象サーバーに転送する。レスポンスも同様に記録してからエージェントに返す。LLM APIへの依存がないため、任意のMCPクライアントから利用可能。
 
-**関連コンポーネント**: ScenarioRunner, TraceEngine
+**関連コンポーネント**: SessionManager, TraceEngine, EvaluateEngine
 
 ## ステータス・状態
 
@@ -423,17 +424,16 @@ stateDiagram-v2
 **対処方法**:
 - エージェント: 有効なtrace_idを指定する。`gauge_trace_start`の戻り値を使用する。
 
-### LLMAPIError
+### SessionNotFoundError
 
-**クラス名**: `LLMAPIError`
+**クラス名**: `SessionNotFoundError`
 
 **継承元**: `GaugeError`
 
-**発生条件**: テスト用LLM（Claude API）の呼び出しに失敗した場合（認証エラー、レート制限、ネットワークエラー等）
+**発生条件**: 指定されたsession_idに対応するアクティブなプロキシセッションが存在しない場合
 
 **対処方法**:
-- エージェント: `ANTHROPIC_API_KEY`環境変数の設定を確認する。レート制限の場合は時間をおいて再実行する
-- 開発者: ネットワーク接続とAPIクォータを確認する
+- エージェント: `gauge_connect`で取得した有効な`session_id`を指定する。セッションが既にdisconnectされていないか確認する
 
 ## 索引
 
@@ -449,7 +449,6 @@ stateDiagram-v2
 
 ### た行
 - [テスト対象MCPサーバー](#テスト対象mcpサーバー) - ドメイン用語
-- [テスト用LLM](#テスト用llm) - ドメイン用語
 - [テストスイート](#テストスイート) - ドメイン用語
 - [トレース](#トレース) - ドメイン用語
 - [トレースサマリー](#トレースサマリー-tracesummary) - データモデル
@@ -465,8 +464,13 @@ stateDiagram-v2
 - [リンティングルール](#リンティングルール) - ドメイン用語
 - [レイヤードアーキテクチャ](#レイヤードアーキテクチャ) - アーキテクチャ
 
+### は行
+- [プロキシセッション](#プロキシセッション) - ドメイン用語
+
+### ま行
+- [呼び出し元エージェント](#呼び出し元エージェント) - ドメイン用語
+
 ### A-Z
-- [Anthropic SDK](#anthropic-sdk) - 技術用語
 - [E2E](#e2e) - 略語
 - [KPI](#kpi) - 略語
 - [MCP](#mcp-model-context-protocol) - 技術用語
@@ -485,4 +489,4 @@ stateDiagram-v2
 - [ConnectionError](#connectionerror) - 接続エラー
 - [InvalidScenarioError](#invalidscenarioerror) - シナリオ定義エラー
 - [TraceNotFoundError](#tracenotfounderror) - トレース不存在エラー
-- [LLMAPIError](#llmapierror) - LLM APIエラー
+- [SessionNotFoundError](#sessionnotfounderror) - セッション不存在エラー

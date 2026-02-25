@@ -7,25 +7,25 @@ graph TB
     Agent[コーディングエージェント<br/>Claude Code等]
     GaugeMCP[MCP Gauge<br/>MCPサーバー]
     LintEngine[Linting Engine]
+    SessionManager[Session Manager]
+    EvaluateEngine[Evaluate Engine]
     TraceEngine[Tracing Engine]
-    ScenarioRunner[Scenario Runner]
     CompareEngine[Compare Engine]
     ReportGenerator[Report Generator]
     TargetMCP[テスト対象<br/>MCPサーバー]
-    TestLLM[テスト用LLM<br/>Claude API等]
     Storage[(SQLite<br/>トレースデータ)]
 
     Agent -->|MCPプロトコル| GaugeMCP
     GaugeMCP --> LintEngine
-    GaugeMCP --> TraceEngine
-    GaugeMCP --> ScenarioRunner
+    GaugeMCP --> SessionManager
+    GaugeMCP --> EvaluateEngine
     GaugeMCP --> CompareEngine
     GaugeMCP --> ReportGenerator
 
     LintEngine -->|tools/list| TargetMCP
-    TraceEngine -->|プロキシ| TargetMCP
-    ScenarioRunner --> TestLLM
-    ScenarioRunner --> TraceEngine
+    SessionManager -->|プロキシ| TargetMCP
+    SessionManager --> TraceEngine
+    EvaluateEngine --> Storage
     CompareEngine --> Storage
     ReportGenerator --> Storage
     TraceEngine --> Storage
@@ -33,8 +33,9 @@ graph TB
 
 **アーキテクチャの要点**:
 - MCP GaugeはMCPサーバーとして動作し、コーディングエージェントがMCPクライアントとしてツールを呼び出す
+- **プロキシ型アーキテクチャ**: MCP Gaugeはテスト対象サーバーへのプロキシとして動作し、呼び出し元エージェント自身がLLMとしてツール呼び出し判断を行う
 - テスト対象MCPサーバーへの接続は、MCP Gaugeが内部的にMCPクライアントとして行う
-- E2Eテスト実行時は、テスト用LLM（Claude API等）を使って実際のツール呼び出しパターンを生成する
+- LLM APIへの依存がなく、Claude Codeのサブスクリプションプランを含む任意のMCPクライアントから利用可能
 - トレースデータはSQLiteに蓄積し、比較・レポートに活用する
 
 ## 技術スタック
@@ -44,7 +45,6 @@ graph TB
 | 言語 | Python 3.12+ | MCPサーバーSDKの成熟度、エージェント開発エコシステム |
 | MCPサーバー | mcp (Python SDK) | 公式SDK、stdio/SSEトランスポート対応 |
 | MCPクライアント | mcp (Python SDK) | 対象サーバーへの接続用、同一ライブラリで統一 |
-| LLM API | Anthropic Python SDK | テスト用LLMとしてClaude APIを利用 |
 | データベース | SQLite (aiosqlite) | ローカルファイルで完結、依存最小、非同期対応 |
 | データモデル | Pydantic 2.x | 型安全なデータモデル、JSON変換の自動化、MCPのinputSchemaとの親和性 |
 | パッケージ管理 | uv | 高速な依存解決、ロックファイル対応 |
@@ -230,8 +230,6 @@ MCP Gaugeの設定。
 ```python
 class GaugeConfig:
     db_path: str                   # SQLiteファイルパス（デフォルト: ~/.mcp-gauge/gauge.db）
-    anthropic_api_key: str         # 環境変数 ANTHROPIC_API_KEY から取得
-    anthropic_model: str           # テスト用LLMモデル（デフォルト: claude-sonnet-4-20250514）
     mcp_timeout_sec: int           # 対象サーバー接続タイムアウト（デフォルト: 30）
 ```
 
@@ -287,23 +285,25 @@ erDiagram
 class GaugeServer:
     def __init__(self, config: GaugeConfig):
         self.mcp = Server("mcp-gauge")
+        self.storage = TraceStorage(config.db_path)
         self.lint_engine = LintEngine()
-        self.trace_engine = TraceEngine(config.db_path)
-        self.scenario_runner = ScenarioRunner(config)
-        self.compare_engine = CompareEngine(config.db_path)
-        self.report_generator = ReportGenerator(config.db_path)
+        self.trace_engine = TraceEngine(self.storage)
+        self.session_manager = SessionManager(self.trace_engine, config.mcp_timeout_sec)
+        self.evaluate_engine = EvaluateEngine(self.storage)
+        self.compare_engine = CompareEngine(self.storage)
+        self.report_generator = ReportGenerator(self.storage)
 
-    async def run(self) -> None:
-        """MCPサーバーとして起動する"""
+    async def initialize(self) -> None:
+        """DB初期化とクラッシュリカバリーを実行する"""
 
     # 公開ツール
-    async def gauge_lint(self, server_command: str, server_args: list[str] | None) -> list[LintResult]: ...
-    async def gauge_trace_start(self, server_command: str, server_args: list[str] | None) -> str: ...
-    async def gauge_trace_stop(self, trace_id: str) -> TraceSummary: ...
-    async def gauge_run_scenario(self, server_command: str, scenario: dict, server_args: list[str] | None) -> ScenarioResult: ...
-    async def gauge_run_suite(self, server_command: str, suite_path: str, server_args: list[str] | None) -> SuiteResult: ...
-    async def gauge_compare(self, server_command: str, scenario: dict, baseline_trace_id: str, server_args: list[str] | None) -> ComparisonResult: ...
-    async def gauge_report(self, trace_ids: list[str]) -> Report: ...
+    async def gauge_lint(self, server_command: str, server_args: list[str] | None) -> dict: ...
+    async def gauge_connect(self, server_command: str, server_args: list[str] | None, scenario_id: str | None) -> dict: ...
+    async def gauge_proxy_call(self, session_id: str, tool_name: str, arguments: dict) -> dict: ...
+    async def gauge_disconnect(self, session_id: str, task_success: bool | None) -> dict: ...
+    async def gauge_evaluate(self, session_id: str, success_criteria: dict, task_success: bool | None) -> dict: ...
+    async def gauge_compare(self, baseline_trace_id: str, current_trace_id: str) -> dict: ...
+    async def gauge_report(self, trace_ids: list[str]) -> dict: ...
 ```
 
 ### Linting Engine
@@ -401,58 +401,84 @@ def _args_similar(a: dict, b: dict) -> bool:
 **リカバリステップの計測ロジック**:
 - エラーレスポンス発生後、次にエラーなしでタスクが進行するまでのステップ数を加算
 
-### Scenario Runner
+### Session Manager
 
 **責務**:
-- テストシナリオを読み込み、テスト用LLMにタスク指示を与えて実行する
-- LLMのツール呼び出しを対象MCPサーバーに転送し、結果をトレースする
-- 成功条件に基づいて合否を判定する
+- 対象MCPサーバーへのプロキシセッションを管理する
+- gauge_connect → gauge_proxy_call (繰り返し) → gauge_disconnect のライフサイクルを管理する
+- 全ツール呼び出しをトレースする
 
 ```python
-class ScenarioRunner:
-    def __init__(self, config: GaugeConfig):
-        self.llm_client = AnthropicClient(config.anthropic_api_key)
-        self.trace_engine = TraceEngine(config.db_path)
+class SessionManager:
+    def __init__(self, trace_engine: TraceEngine, mcp_timeout_sec: int = 30):
+        self.trace_engine = trace_engine
+        self.mcp_timeout_sec = mcp_timeout_sec
+        self._clients: dict[str, MCPClientWrapper] = {}
 
-    async def run_scenario(self, server_command: str, scenario: ScenarioDefinition, server_args: list[str] | None) -> ScenarioResult:
-        """シナリオを実行し、結果を返す"""
+    async def connect(self, server_command: str, server_args: list[str] | None, scenario_id: str | None) -> tuple[str, list[dict]]:
+        """対象サーバーに接続し、(session_id, tools)を返す"""
 
-    async def run_suite(self, server_command: str, suite_path: str, server_args: list[str] | None) -> SuiteResult:
-        """スイート（複数シナリオ）を一括実行する"""
+    async def proxy_call(self, session_id: str, tool_name: str, arguments: dict) -> dict:
+        """ツールをプロキシ呼び出しし、結果とメトリクスを返す"""
 
-    async def _execute_with_llm(self, scenario: ScenarioDefinition, target_tools: list[Tool]) -> tuple[list[TraceRecord], bool]:
-        """LLMにタスクを実行させ、ツール呼び出しをトレースする"""
+    async def disconnect(self, session_id: str, task_success: bool | None) -> TraceSummary:
+        """接続を切断しサマリーを返す"""
+
+    async def close_all(self) -> None:
+        """全アクティブセッションを強制終了する"""
+```
+
+### Evaluate Engine
+
+**責務**:
+- トレースセッションの結果を成功条件に基づいて評価する
+- gauge_disconnectで終了したセッションに対して事後評価を行う
+
+```python
+class EvaluateEngine:
+    def __init__(self, storage: TraceStorage):
+        self.storage = storage
+
+    async def evaluate(self, session_id: str, success_criteria: SuccessCriteria, task_success: bool | None) -> dict:
+        """セッションのトレースデータを成功条件で評価する"""
 
     def _evaluate_criteria(self, summary: TraceSummary, criteria: SuccessCriteria, task_success: bool) -> CriteriaEvaluation:
         """成功条件を評価する"""
 ```
 
-**LLMテスト実行フロー**:
+**プロキシ型テスト実行フロー**:
 
 ```mermaid
 sequenceDiagram
     participant Agent as コーディングエージェント
     participant Gauge as MCP Gauge
-    participant Runner as Scenario Runner
-    participant LLM as テスト用LLM
+    participant Session as Session Manager
     participant Target as 対象MCPサーバー
 
-    Agent->>Gauge: gauge_run_scenario(server_command, scenario)
-    Gauge->>Runner: run_scenario()
-    Runner->>Target: MCPクライアントとして接続
-    Target-->>Runner: ツール一覧
-    Runner->>LLM: タスク指示 + ツール定義
-    loop ツール呼び出しループ
-        LLM-->>Runner: ツール呼び出しリクエスト
-        Runner->>Runner: トレース記録
-        Runner->>Target: ツール実行
-        Target-->>Runner: 結果
-        Runner->>LLM: ツール結果
+    Agent->>Gauge: gauge_connect(server_command)
+    Gauge->>Session: connect()
+    Session->>Target: MCPクライアントとして接続
+    Target-->>Session: ツール一覧
+    Session-->>Gauge: session_id + tools
+    Gauge-->>Agent: {session_id, tools}
+
+    loop エージェントが自律的にツールを呼び出す
+        Agent->>Gauge: gauge_proxy_call(session_id, tool_name, args)
+        Gauge->>Session: proxy_call()
+        Session->>Target: ツール実行
+        Target-->>Session: 結果
+        Session->>Session: トレース記録
+        Session-->>Gauge: {result, metrics}
+        Gauge-->>Agent: 結果 + メトリクス
     end
-    LLM-->>Runner: タスク完了
-    Runner->>Runner: 成功条件評価
-    Runner-->>Gauge: ScenarioResult
-    Gauge-->>Agent: 構造化JSON結果
+
+    Agent->>Gauge: gauge_disconnect(session_id, task_success)
+    Gauge->>Session: disconnect()
+    Session-->>Gauge: TraceSummary
+    Gauge-->>Agent: サマリー
+
+    Agent->>Gauge: gauge_evaluate(session_id, success_criteria)
+    Gauge-->>Agent: 合否判定 + 詳細評価
 ```
 
 ### Compare Engine
@@ -567,32 +593,28 @@ sequenceDiagram
 }
 ```
 
-### ユースケース2: シナリオベースE2Eテスト
+### ユースケース2: プロキシ型E2Eテスト
 
-**シナリオ定義例（YAML）**:
-```yaml
-id: create-and-list-resource
-name: リソースの作成と一覧取得
-description: リソースを1つ作成し、一覧で確認するシナリオ
-task_instruction: |
-  MCPサーバーを使って以下を行ってください:
-  1. "test-resource" という名前のリソースを作成する
-  2. リソース一覧を取得し、作成したリソースが含まれていることを確認する
-success_criteria:
-  max_steps: 5
-  required_tools:
-    - create_resource
-    - list_resources
-  forbidden_tools:
-    - delete_resource
-  must_succeed: true
-```
+**テスト実行フロー**:
 
-**エージェントが受け取るレスポンス例**:
+1. エージェントが`gauge_connect`で対象サーバーに接続し、ツール一覧を取得
+2. エージェント自身がツール一覧を見て、`gauge_proxy_call`でツールを呼び出す
+3. `gauge_disconnect`でセッションを終了
+4. `gauge_evaluate`で成功条件を評価
+
+**成功条件の定義例**:
 ```json
 {
-  "scenario_id": "create-and-list-resource",
-  "trace_id": "550e8400-e29b-41d4-a716-446655440000",
+  "max_steps": 5,
+  "required_tools": ["create_resource", "list_resources"],
+  "forbidden_tools": ["delete_resource"],
+  "must_succeed": true
+}
+```
+
+**gauge_evaluateのレスポンス例**:
+```json
+{
   "passed": true,
   "task_success": true,
   "summary": {
@@ -620,11 +642,10 @@ sequenceDiagram
     participant Agent as コーディングエージェント
     participant Gauge as MCP Gauge
     participant Compare as Compare Engine
-    participant Runner as Scenario Runner
 
-    Agent->>Gauge: gauge_compare(server_command, scenario, baseline_trace_id)
-    Gauge->>Runner: run_scenario() [変更後で実行]
-    Runner-->>Gauge: current_trace_id
+    Note over Agent: 変更前: gauge_connect → proxy_call → disconnect でベースライントレースを取得
+    Note over Agent: 変更後: gauge_connect → proxy_call → disconnect で新規トレースを取得
+    Agent->>Gauge: gauge_compare(baseline_trace_id, current_trace_id)
     Gauge->>Compare: compare(baseline_trace_id, current_trace_id)
     Compare->>Compare: メトリクス比較
     Compare-->>Gauge: ComparisonResult
@@ -769,8 +790,8 @@ scenarios:
 |-----------|------|-------------------|
 | 対象サーバー接続失敗 | 処理を中断 | `{"error": "connection_failed", "message": "...", "suggestion": "server_commandとserver_argsを確認してください"}` |
 | 対象サーバータイムアウト | 処理を中断 | `{"error": "timeout", "message": "...", "suggestion": "対象サーバーの起動時間を確認してください"}` |
-| LLM API エラー | 処理を中断 | `{"error": "llm_api_error", "message": "...", "suggestion": "ANTHROPIC_API_KEYの設定を確認してください"}` |
-| シナリオ定義不正 | 処理を中断 | `{"error": "invalid_scenario", "message": "...", "suggestion": "シナリオのYAML形式を確認してください"}` |
+| セッション不存在 | 処理を中断 | `{"error": "session_not_found", "message": "...", "suggestion": "gauge_connectで取得した有効なsession_idを指定してください"}` |
+| シナリオ定義不正 | 処理を中断 | `{"error": "invalid_scenario", "message": "...", "suggestion": "success_criteriaの形式を確認してください"}` |
 | トレースID不存在 | 処理を中断 | `{"error": "trace_not_found", "message": "...", "suggestion": "有効なtrace_idを指定してください"}` |
 | テスト実行中のツールエラー | トレースに記録して続行 | 正常結果の一部としてerror_countに反映 |
 
@@ -778,10 +799,10 @@ scenarios:
 
 ## セキュリティ考慮事項
 
-- **APIキー管理**: ANTHROPIC_API_KEYは環境変数から取得。ツールパラメータでは受け付けない
+- **APIキー管理**: プロキシ型アーキテクチャのため、MCP Gauge自体にLLM APIキーは不要。呼び出し元エージェント側で管理される
 - **対象サーバーの隔離**: テスト対象MCPサーバーはサブプロセスとして起動し、MCP Gaugeのプロセスとは分離する
 - **トレースデータの機密性**: トレースデータには対象サーバーの入出力が含まれるため、ローカルファイルシステムに保存しアクセス制御はOSに委譲する
-- **破壊的操作の防止**: MCP Gaugeはテスト対象サーバーのツールを直接呼び出すが、シナリオ定義のforbidden_toolsで破壊的ツールの実行を制御可能にする
+- **破壊的操作の防止**: 成功条件のforbidden_toolsで事後評価。呼び出し元エージェントが破壊的ツールの呼び出しを自律的に回避することを前提とする
 
 ## パフォーマンス最適化
 

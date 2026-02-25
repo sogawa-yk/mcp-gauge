@@ -8,19 +8,20 @@ from mcp.types import TextContent, Tool
 
 from mcp_gauge.config import GaugeConfig
 from mcp_gauge.engines.compare import CompareEngine
+from mcp_gauge.engines.evaluate import EvaluateEngine
 from mcp_gauge.engines.lint import LintEngine
 from mcp_gauge.engines.report import ReportGenerator
-from mcp_gauge.engines.scenario import ScenarioRunner
+from mcp_gauge.engines.session import SessionManager
 from mcp_gauge.engines.trace import TraceEngine
 from mcp_gauge.exceptions import (
     GaugeError,
     InvalidScenarioError,
-    LLMAPIError,
     ServerConnectionError,
+    SessionNotFoundError,
     TraceNotFoundError,
 )
 from mcp_gauge.infra.storage import TraceStorage
-from mcp_gauge.models.scenario import ScenarioDefinition
+from mcp_gauge.models.scenario import SuccessCriteria
 
 
 class GaugeServer:
@@ -32,7 +33,8 @@ class GaugeServer:
         self.storage = TraceStorage(config.db_path)
         self.lint_engine = LintEngine()
         self.trace_engine = TraceEngine(self.storage)
-        self.scenario_runner = ScenarioRunner(config)
+        self.session_manager = SessionManager(self.trace_engine, config.mcp_timeout_sec)
+        self.evaluate_engine = EvaluateEngine(self.storage)
         self.compare_engine = CompareEngine(self.storage)
         self.report_generator = ReportGenerator(self.storage)
 
@@ -75,10 +77,12 @@ class GaugeServer:
                     },
                 ),
                 Tool(
-                    name="gauge_trace_start",
+                    name="gauge_connect",
                     description=(
-                        "対象MCPサーバーへのトレースセッションを"
-                        "開始し、trace_idを返す。"
+                        "対象MCPサーバーに接続し、トレースセッションを"
+                        "開始する。session_idと利用可能なツール一覧を返す。"
+                        "呼び出し元はツール一覧を見て、"
+                        "gauge_proxy_callでツールを呼び出す。"
                     ),
                     inputSchema={
                         "type": "object",
@@ -93,94 +97,109 @@ class GaugeServer:
                                 "description": (
                                     "対象MCPサーバーの起動引数。デフォルト: []"
                                 ),
+                            },
+                            "scenario_id": {
+                                "type": "string",
+                                "description": ("紐づけるシナリオID（任意）"),
                             },
                         },
                         "required": ["server_command"],
                     },
                 ),
                 Tool(
-                    name="gauge_trace_stop",
+                    name="gauge_proxy_call",
                     description=(
-                        "トレースセッションを終了し、"
+                        "gauge_connectで確立した接続を通じて、"
+                        "対象MCPサーバーのツールを呼び出す。"
+                        "呼び出しはトレースとして自動記録される。"
+                        "結果には対象ツールの応答と"
+                        "呼び出しメトリクスが含まれる。"
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "session_id": {
+                                "type": "string",
+                                "description": ("gauge_connectで取得したセッションID"),
+                            },
+                            "tool_name": {
+                                "type": "string",
+                                "description": ("呼び出す対象ツールの名前"),
+                            },
+                            "arguments": {
+                                "type": "object",
+                                "description": ("対象ツールに渡す引数"),
+                            },
+                        },
+                        "required": [
+                            "session_id",
+                            "tool_name",
+                            "arguments",
+                        ],
+                    },
+                ),
+                Tool(
+                    name="gauge_disconnect",
+                    description=(
+                        "対象MCPサーバーとの接続を切断し、"
+                        "トレースセッションを終了する。"
                         "トレースサマリー（メトリクス）を返す。"
                     ),
                     inputSchema={
                         "type": "object",
                         "properties": {
-                            "trace_id": {
+                            "session_id": {
                                 "type": "string",
+                                "description": ("gauge_connectで取得したセッションID"),
+                            },
+                            "task_success": {
+                                "type": "boolean",
                                 "description": (
-                                    "gauge_trace_startで取得したトレースID"
+                                    "タスクが成功したかどうか。"
+                                    "呼び出し元エージェントが"
+                                    "判断して設定する"
                                 ),
                             },
                         },
-                        "required": ["trace_id"],
+                        "required": ["session_id"],
                     },
                 ),
                 Tool(
-                    name="gauge_run_scenario",
+                    name="gauge_evaluate",
                     description=(
-                        "テストシナリオを実行し、合否と詳細を返す。"
-                        "LLMがテスト対象MCPサーバーのツールを使って"
-                        "タスクを実行し、成功条件に基づいて評価する。"
+                        "トレースセッションの結果を成功条件に基づいて"
+                        "評価する。gauge_disconnectで終了したセッションの"
+                        "トレースデータと成功条件を照合し、"
+                        "合否判定と詳細評価を返す。"
                     ),
                     inputSchema={
                         "type": "object",
                         "properties": {
-                            "server_command": {
+                            "session_id": {
                                 "type": "string",
-                                "description": ("対象MCPサーバーの起動コマンド"),
+                                "description": ("評価対象のセッションID"),
                             },
-                            "scenario": {
+                            "success_criteria": {
                                 "type": "object",
                                 "description": (
-                                    "テストシナリオ定義（id, name, "
-                                    "description, task_instruction, "
-                                    "success_criteria を含む）"
+                                    "成功条件（max_steps, "
+                                    "required_tools, "
+                                    "forbidden_tools, "
+                                    "must_succeed を含む）"
                                 ),
                             },
-                            "server_args": {
-                                "type": "array",
-                                "items": {"type": "string"},
+                            "task_success": {
+                                "type": "boolean",
                                 "description": (
-                                    "対象MCPサーバーの起動引数。デフォルト: []"
+                                    "タスクが成功したかの判断。"
+                                    "呼び出し元エージェントが"
+                                    "判断して設定する"
                                 ),
                             },
                         },
                         "required": [
-                            "server_command",
-                            "scenario",
-                        ],
-                    },
-                ),
-                Tool(
-                    name="gauge_run_suite",
-                    description=(
-                        "テストスイート（複数シナリオ）を一括実行し、"
-                        "結果サマリーを返す。"
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "server_command": {
-                                "type": "string",
-                                "description": ("対象MCPサーバーの起動コマンド"),
-                            },
-                            "suite_path": {
-                                "type": "string",
-                                "description": ("スイート定義YAMLファイルのパス"),
-                            },
-                            "server_args": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                                "description": (
-                                    "対象MCPサーバーの起動引数。デフォルト: []"
-                                ),
-                            },
-                        },
-                        "required": [
-                            "server_command",
-                            "suite_path",
+                            "session_id",
+                            "success_criteria",
                         ],
                     },
                 ),
@@ -241,104 +260,81 @@ class GaugeServer:
                     )
                 ]
             except ServerConnectionError as e:
-                return [
-                    TextContent(
-                        type="text",
-                        text=json.dumps(
-                            {
-                                "error": "connection_failed",
-                                "message": str(e),
-                                "suggestion": (
-                                    "server_commandとserver_argsを確認してください"
-                                ),
-                            },
-                            ensure_ascii=False,
-                        ),
-                    )
-                ]
+                return self._error_response(
+                    "connection_failed",
+                    str(e),
+                    "server_commandとserver_argsを確認してください",
+                )
+            except SessionNotFoundError as e:
+                return self._error_response(
+                    "session_not_found",
+                    str(e),
+                    "gauge_connectで取得した有効なsession_idを指定してください",
+                )
             except TraceNotFoundError as e:
-                return [
-                    TextContent(
-                        type="text",
-                        text=json.dumps(
-                            {
-                                "error": "trace_not_found",
-                                "message": str(e),
-                                "suggestion": ("有効なtrace_idを指定してください"),
-                            },
-                            ensure_ascii=False,
-                        ),
-                    )
-                ]
+                return self._error_response(
+                    "trace_not_found",
+                    str(e),
+                    "有効なtrace_idを指定してください",
+                )
             except InvalidScenarioError as e:
-                return [
-                    TextContent(
-                        type="text",
-                        text=json.dumps(
-                            {
-                                "error": "invalid_scenario",
-                                "message": str(e),
-                                "suggestion": ("シナリオのYAML形式を確認してください"),
-                            },
-                            ensure_ascii=False,
-                        ),
-                    )
-                ]
-            except LLMAPIError as e:
-                return [
-                    TextContent(
-                        type="text",
-                        text=json.dumps(
-                            {
-                                "error": "llm_api_error",
-                                "message": str(e),
-                                "suggestion": (
-                                    "ANTHROPIC_API_KEYの設定を確認してください"
-                                ),
-                            },
-                            ensure_ascii=False,
-                        ),
-                    )
-                ]
+                return self._error_response(
+                    "invalid_scenario",
+                    str(e),
+                    "success_criteriaの形式を確認してください",
+                )
             except GaugeError as e:
-                return [
-                    TextContent(
-                        type="text",
-                        text=json.dumps(
-                            {
-                                "error": "gauge_error",
-                                "message": str(e),
-                                "suggestion": ("エラーの詳細を確認してください"),
-                            },
-                            ensure_ascii=False,
-                        ),
-                    )
-                ]
+                return self._error_response(
+                    "gauge_error",
+                    str(e),
+                    "エラーの詳細を確認してください",
+                )
+
+    @staticmethod
+    def _error_response(
+        error_code: str, message: str, suggestion: str
+    ) -> list[TextContent]:
+        """エラーレスポンスを生成する。"""
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "error": error_code,
+                        "message": message,
+                        "suggestion": suggestion,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        ]
 
     async def _dispatch(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """ツール名に基づいてエンジンに委譲する。"""
         await self.storage.init_db()
 
-        if name == "gauge_lint":
-            return await self._handle_lint(arguments)
-        elif name == "gauge_trace_start":
-            return await self._handle_trace_start(arguments)
-        elif name == "gauge_trace_stop":
-            return await self._handle_trace_stop(arguments)
-        elif name == "gauge_run_scenario":
-            return await self._handle_run_scenario(arguments)
-        elif name == "gauge_run_suite":
-            return await self._handle_run_suite(arguments)
-        elif name == "gauge_compare":
-            return await self._handle_compare(arguments)
-        elif name == "gauge_report":
-            return await self._handle_report(arguments)
-        else:
+        handlers: dict[
+            str,
+            Any,
+        ] = {
+            "gauge_lint": self._handle_lint,
+            "gauge_connect": self._handle_connect,
+            "gauge_proxy_call": self._handle_proxy_call,
+            "gauge_disconnect": self._handle_disconnect,
+            "gauge_evaluate": self._handle_evaluate,
+            "gauge_compare": self._handle_compare,
+            "gauge_report": self._handle_report,
+        }
+
+        handler = handlers.get(name)
+        if handler is None:
             return {
                 "error": "unknown_tool",
                 "message": f"不明なツール: {name}",
                 "suggestion": "利用可能なツール名を確認してください",
             }
+        result: dict[str, Any] = await handler(arguments)
+        return result
 
     async def _handle_lint(self, arguments: dict[str, Any]) -> dict[str, Any]:
         server_command = arguments["server_command"]
@@ -354,35 +350,35 @@ class GaugeServer:
             "issues": [r.model_dump() for r in results],
         }
 
-    async def _handle_trace_start(self, arguments: dict[str, Any]) -> dict[str, Any]:
+    async def _handle_connect(self, arguments: dict[str, Any]) -> dict[str, Any]:
         server_command = arguments["server_command"]
         server_args = arguments.get("server_args")
-        trace_id = await self.trace_engine.start_session(server_command, server_args)
-        return {"trace_id": trace_id}
+        scenario_id = arguments.get("scenario_id")
+        session_id, tools = await self.session_manager.connect(
+            server_command, server_args, scenario_id
+        )
+        return {"session_id": session_id, "tools": tools}
 
-    async def _handle_trace_stop(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        trace_id = arguments["trace_id"]
-        summary = await self.trace_engine.stop_session(trace_id)
+    async def _handle_proxy_call(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        session_id = arguments["session_id"]
+        tool_name = arguments["tool_name"]
+        tool_arguments = arguments.get("arguments", {})
+        return await self.session_manager.proxy_call(
+            session_id, tool_name, tool_arguments
+        )
+
+    async def _handle_disconnect(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        session_id = arguments["session_id"]
+        task_success = arguments.get("task_success")
+        summary = await self.session_manager.disconnect(session_id, task_success)
         return summary.model_dump()
 
-    async def _handle_run_scenario(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        server_command = arguments["server_command"]
-        scenario_data = arguments["scenario"]
-        server_args = arguments.get("server_args")
-        scenario = ScenarioDefinition(**scenario_data)
-        result = await self.scenario_runner.run_scenario(
-            server_command, scenario, server_args
-        )
-        return result.model_dump()
-
-    async def _handle_run_suite(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        server_command = arguments["server_command"]
-        suite_path = arguments["suite_path"]
-        server_args = arguments.get("server_args")
-        result = await self.scenario_runner.run_suite(
-            server_command, suite_path, server_args
-        )
-        return result.model_dump()
+    async def _handle_evaluate(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        session_id = arguments["session_id"]
+        criteria_data = arguments["success_criteria"]
+        task_success = arguments.get("task_success")
+        criteria = SuccessCriteria(**criteria_data)
+        return await self.evaluate_engine.evaluate(session_id, criteria, task_success)
 
     async def _handle_compare(self, arguments: dict[str, Any]) -> dict[str, Any]:
         baseline_trace_id = arguments["baseline_trace_id"]

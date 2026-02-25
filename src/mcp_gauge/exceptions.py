@@ -30,9 +30,9 @@ class TraceNotFoundError(GaugeError):
         super().__init__(f"トレースが見つかりません: {trace_id}")
 
 
-class LLMAPIError(GaugeError):
-    """LLM APIの呼び出しに失敗。"""
+class SessionNotFoundError(GaugeError):
+    """指定されたセッションIDがアクティブでない。"""
 
-    def __init__(self, message: str, cause: Exception | None = None) -> None:
-        self.cause = cause
-        super().__init__(f"LLM APIエラー: {message}")
+    def __init__(self, session_id: str) -> None:
+        self.session_id = session_id
+        super().__init__(f"アクティブなセッションが見つかりません: {session_id}")

@@ -13,7 +13,7 @@
   - MCP Python SDKが公式サポートする主要言語
   - asyncio対応が成熟しており、MCPサーバーの非同期通信に適する
   - 型ヒント（typing）の強化により、構造化データの定義が明確
-  - MCPサーバー開発のエコシステム（mcp, anthropic SDK）がPythonに集中している
+  - MCPサーバー開発のエコシステム（mcp SDK）がPythonに集中している
 
 - **uv**
   - 依存解決・インストールが高速
@@ -25,7 +25,6 @@
 | 技術 | 用途 | 選定理由 |
 |------|------|----------|
 | mcp (Python SDK) | MCPサーバー/クライアント実装 | 公式SDK、stdio/SSEトランスポート対応、サーバー・クライアント両方を単一ライブラリで実装可能 |
-| anthropic | テスト用LLM API呼び出し | Claude APIの公式SDK、tool_use対応が成熟 |
 | aiosqlite | 非同期SQLiteアクセス | asyncioベースのMCPサーバー内から非同期でDB操作可能 |
 | pydantic | データモデル定義・バリデーション | 型安全なデータモデル、JSON変換の自動化、MCPのinputSchemaとの親和性 |
 | pyyaml | シナリオ定義ファイル読み込み | YAMLパーサーのデファクトスタンダード |
@@ -48,12 +47,11 @@
 │   MCPサーバーレイヤー              │ ← MCPプロトコルの処理、ツール公開
 ├──────────────────────────────────┤
 │   エンジンレイヤー                 │ ← 各機能のビジネスロジック
-│   (Lint / Trace / Scenario /     │
-│    Compare / Report)             │
+│   (Lint / Trace / Session /      │
+│    Evaluate / Compare / Report)  │
 ├──────────────────────────────────┤
 │   インフラレイヤー                 │ ← 外部接続・データ永続化
-│   (MCPClient / LLMClient /      │
-│    TraceStorage)                 │
+│   (MCPClient / TraceStorage)     │
 └──────────────────────────────────┘
 ```
 
@@ -63,12 +61,12 @@
 - **禁止される操作**: インフラレイヤーへの直接アクセス、ビジネスロジックの実装
 
 #### エンジンレイヤー
-- **責務**: リンティング、トレーシング、シナリオ実行、比較、レポート生成の各ビジネスロジック
+- **責務**: リンティング、トレーシング、プロキシセッション管理、成功条件評価、比較、レポート生成の各ビジネスロジック
 - **許可される操作**: インフラレイヤーの呼び出し
 - **禁止される操作**: MCPプロトコル固有の処理
 
 #### インフラレイヤー
-- **責務**: テスト対象MCPサーバーへの接続、LLM API呼び出し、SQLiteへのデータ永続化
+- **責務**: テスト対象MCPサーバーへの接続、SQLiteへのデータ永続化
 - **許可される操作**: 外部サービス・ファイルシステムへのアクセス
 - **禁止される操作**: ビジネスロジックの実装
 
@@ -83,13 +81,13 @@ src/mcp_gauge/
 │   ├── __init__.py
 │   ├── lint.py            # LintEngine + LintRules
 │   ├── trace.py           # TraceEngine
-│   ├── scenario.py        # ScenarioRunner
+│   ├── session.py         # SessionManager（プロキシセッション管理）
+│   ├── evaluate.py        # EvaluateEngine（成功条件評価）
 │   ├── compare.py         # CompareEngine
 │   └── report.py          # ReportGenerator
 ├── infra/                 # インフラレイヤー
 │   ├── __init__.py
 │   ├── mcp_client.py      # 対象MCPサーバーへの接続
-│   ├── llm_client.py      # LLM API呼び出し（Anthropic SDK）
 │   └── storage.py         # TraceStorage（SQLite）
 ├── models/                # データモデル（Pydantic）
 │   ├── __init__.py
@@ -104,9 +102,7 @@ src/mcp_gauge/
 
 | 設定キー | 取得元 | デフォルト値 | 説明 |
 |---------|--------|------------|------|
-| ANTHROPIC_API_KEY | 環境変数 | （必須） | Claude API認証キー。E2Eテスト実行時のみ必須 |
 | MCP_GAUGE_DB_PATH | 環境変数 | ~/.mcp-gauge/gauge.db | SQLiteファイルパス |
-| MCP_GAUGE_MODEL | 環境変数 | claude-sonnet-4-20250514 | テスト用LLMモデル |
 | MCP_GAUGE_TIMEOUT | 環境変数 | 30 | 対象サーバー接続タイムアウト（秒） |
 
 ## データ永続化戦略
@@ -193,7 +189,7 @@ CREATE TABLE trace_summaries (
 
 ### データ保護
 
-- **APIキー管理**: `ANTHROPIC_API_KEY`は環境変数から取得。MCPツールパラメータでは受け付けない。設定ファイルへの記載も禁止
+- **APIキー管理**: プロキシ型アーキテクチャにより、LLM APIキーの管理は不要。呼び出し元エージェント側で管理される
 - **アクセス制御**: SQLiteデータベースファイルのパーミッションを`600`（所有者のみ読み書き）に設定
 - **トレースデータの機密性**: トレースデータにはテスト対象サーバーの入出力が含まれる。ローカルファイルに保存し、外部送信しない
 
@@ -220,7 +216,7 @@ CREATE TABLE trace_summaries (
 ### 機能拡張性
 
 - **リンティングルールの追加**: `LintRule`基底クラスを継承した新ルールを追加するだけで拡張可能
-- **LLMプロバイダーの切り替え**: `LLMClient`インターフェースを抽象化し、Anthropic以外のプロバイダーも差し替え可能な設計（Post-MVP: F9マルチクライアント対応の布石）
+- **LLMプロバイダーの非依存**: プロキシ型アーキテクチャにより、MCP Gauge自体はLLMプロバイダーに依存しない。呼び出し元エージェント（Claude Code等）が任意のLLMを使用可能
 - **MCPツールの追加**: `GaugeServer`に新しいツールハンドラを追加するだけで拡張可能
 
 ## テスト戦略
@@ -243,23 +239,21 @@ CREATE TABLE trace_summaries (
 ### 環境要件
 - **OS**: Linux, macOS（Windowsは未検証）
 - **Python**: 3.12以上
-- **必要な外部依存**: ANTHROPIC_API_KEY（E2Eテスト実行時のみ必須。リンティングでは不要）
+- **必要な外部依存**: なし（プロキシ型アーキテクチャのため、LLM APIキー等の外部依存は不要）
 
 ### パフォーマンス制約
-- E2Eテスト実行時のレスポンスはLLM APIの応答速度に依存する（MCP Gauge側では制御不可）
 - テスト対象MCPサーバーの起動時間がテスト全体の所要時間に影響する
 
 ### セキュリティ制約
 - MCP Gaugeはテスト対象サーバーのツールを実行するため、テスト環境での実行を推奨
 - 本番環境のMCPサーバーに対する直接テストは、破壊的操作のリスクがある
-- **破壊的操作の防止**: シナリオ定義のforbidden_toolsはScenarioRunner内で評価され、リスト内のツールはLLMに提供するツール定義から除外される。LintEngineおよびTraceEngineはツールの実行制御を行わない（リンティング・記録のみ）
+- **破壊的操作の防止**: 成功条件のforbidden_toolsはEvaluateEngineで事後評価される。呼び出し元エージェントが破壊的ツールの呼び出しを自律的に回避することを前提とする。LintEngineおよびTraceEngineはツールの実行制御を行わない（リンティング・記録のみ）
 
 ## 依存関係管理
 
 | ライブラリ | 用途 | バージョン管理方針 |
 |-----------|------|-------------------|
 | mcp | MCPサーバー/クライアント | 互換範囲指定（>=1.0,<2.0） |
-| anthropic | LLM API | 互換範囲指定（>=1.0,<2.0） |
 | aiosqlite | 非同期SQLite | 互換範囲指定 |
 | pydantic | データモデル | 互換範囲指定（>=2.0,<3.0） |
 | pyyaml | YAML読み込み | 互換範囲指定 |

@@ -3,8 +3,8 @@
 from mcp_gauge.exceptions import (
     GaugeError,
     InvalidScenarioError,
-    LLMAPIError,
     ServerConnectionError,
+    SessionNotFoundError,
     TraceNotFoundError,
 )
 
@@ -75,22 +75,16 @@ class TestTraceNotFoundError:
         assert isinstance(err, GaugeError)
 
 
-class TestLLMAPIError:
-    """LLMAPIErrorのテスト。"""
+class TestSessionNotFoundError:
+    """SessionNotFoundErrorのテスト。"""
 
-    def test_create_with_cause(self):
-        """cause付きで作成できること。"""
-        cause = RuntimeError("api error")
-        err = LLMAPIError("rate limit exceeded", cause=cause)
-        assert err.cause is cause
-        assert "rate limit exceeded" in str(err)
-
-    def test_create_without_cause(self):
-        """causeなしで作成できること。"""
-        err = LLMAPIError("error message")
-        assert err.cause is None
+    def test_create(self):
+        """正しいメッセージで作成されること。"""
+        err = SessionNotFoundError("sess-123")
+        assert err.session_id == "sess-123"
+        assert "sess-123" in str(err)
 
     def test_is_gauge_error(self):
         """GaugeErrorのサブクラスであること。"""
-        err = LLMAPIError("msg")
+        err = SessionNotFoundError("id")
         assert isinstance(err, GaugeError)

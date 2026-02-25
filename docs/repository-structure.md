@@ -17,13 +17,13 @@ mcp-gauge/
 │       │   ├── __init__.py
 │       │   ├── lint.py
 │       │   ├── trace.py
-│       │   ├── scenario.py
+│       │   ├── session.py
+│       │   ├── evaluate.py
 │       │   ├── compare.py
 │       │   └── report.py
 │       ├── infra/             # インフラレイヤー（外部接続・永続化）
 │       │   ├── __init__.py
 │       │   ├── mcp_client.py
-│       │   ├── llm_client.py
 │       │   └── storage.py
 │       └── models/            # データモデル（Pydantic）
 │           ├── __init__.py
@@ -36,7 +36,8 @@ mcp-gauge/
 │   │   ├── engines/
 │   │   │   ├── test_lint.py
 │   │   │   ├── test_trace.py
-│   │   │   ├── test_scenario.py
+│   │   │   ├── test_session.py
+│   │   │   ├── test_evaluate.py
 │   │   │   ├── test_compare.py
 │   │   │   └── test_report.py
 │   │   ├── infra/
@@ -88,7 +89,7 @@ mcp-gauge/
 
 **配置内容**:
 - `GaugeServer`クラス: MCPサーバーの起動・ツール登録
-- 各ツールのハンドラ関数: `gauge_lint`, `gauge_trace_start`, `gauge_run_scenario`等
+- 各ツールのハンドラ関数: `gauge_lint`, `gauge_connect`, `gauge_proxy_call`, `gauge_disconnect`, `gauge_evaluate`等
 
 **依存関係**:
 - 依存可能: `engines/`, `models/`, `config.py`
@@ -106,7 +107,7 @@ mcp-gauge/
 **役割**: 設定の管理。環境変数からの読み取り
 
 **配置内容**:
-- `GaugeConfig`クラス: DB パス、APIキー等の設定値
+- `GaugeConfig`クラス: DBパス、タイムアウト等の設定値
 
 ### src/mcp_gauge/engines/ (エンジンレイヤー)
 
@@ -115,7 +116,8 @@ mcp-gauge/
 **配置ファイル**:
 - `lint.py`: LintEngine + 各LintRuleクラス
 - `trace.py`: TraceEngine（トレースの記録・集計）
-- `scenario.py`: ScenarioRunner（シナリオ実行・合否判定）
+- `session.py`: SessionManager（プロキシセッション管理）
+- `evaluate.py`: EvaluateEngine（成功条件評価）
 - `compare.py`: CompareEngine（ベースライン比較）
 - `report.py`: ReportGenerator（統合レポート生成）
 
@@ -134,12 +136,11 @@ mcp-gauge/
 
 **配置ファイル**:
 - `mcp_client.py`: テスト対象MCPサーバーへの接続（MCPクライアント実装）
-- `llm_client.py`: テスト用LLM API呼び出し（Anthropic SDK）
 - `storage.py`: TraceStorage（SQLiteへの読み書き）
 
 **命名規則**:
 - ファイル名: snake_case
-- クラス名: PascalCase（`MCPClientWrapper`, `LLMClient`, `TraceStorage`）
+- クラス名: PascalCase（`MCPClientWrapper`, `TraceStorage`）
 
 **依存関係**:
 - 依存可能: `models/`
@@ -178,7 +179,8 @@ tests/unit/
 ├── engines/
 │   ├── test_lint.py           # LintEngine + 各ルールのテスト
 │   ├── test_trace.py          # TraceEngine（冗長検出等のアルゴリズム）のテスト
-│   ├── test_scenario.py       # 成功条件評価のテスト
+│   ├── test_session.py        # SessionManager（プロキシセッション管理）のテスト
+│   ├── test_evaluate.py       # EvaluateEngine（成功条件評価）のテスト
 │   └── test_compare.py        # メトリクス比較のテスト
 └── models/
     └── test_models.py         # Pydanticモデルのバリデーションテスト
