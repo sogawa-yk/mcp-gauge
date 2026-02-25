@@ -29,7 +29,7 @@ class TestServerConnectionError:
         """cause付きで作成できること。"""
         cause = TimeoutError("timeout")
         err = ServerConnectionError("python -m server", cause=cause)
-        assert err.server_command == "python -m server"
+        assert err.target == "python -m server"
         assert err.cause is cause
         assert "python -m server" in str(err)
 
@@ -42,6 +42,12 @@ class TestServerConnectionError:
         """GaugeErrorのサブクラスであること。"""
         err = ServerConnectionError("cmd")
         assert isinstance(err, GaugeError)
+
+    def test_create_with_url_target(self):
+        """URLをターゲットとして作成できること。"""
+        err = ServerConnectionError("http://localhost:8080/mcp")
+        assert err.target == "http://localhost:8080/mcp"
+        assert "http://localhost:8080/mcp" in str(err)
 
 
 class TestInvalidScenarioError:

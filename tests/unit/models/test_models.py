@@ -14,11 +14,62 @@ from mcp_gauge.models.scenario import (
     SuccessCriteria,
 )
 from mcp_gauge.models.trace import (
+    ConnectionParams,
     SessionStatus,
     TraceRecord,
     TraceSession,
     TraceSummary,
+    TransportType,
 )
+
+
+class TestTransportType:
+    """TransportTypeのテスト。"""
+
+    def test_values(self):
+        assert TransportType.STDIO == "stdio"
+        assert TransportType.SSE == "sse"
+        assert TransportType.STREAMABLE_HTTP == "streamable_http"
+
+
+class TestConnectionParams:
+    """ConnectionParamsのテスト。"""
+
+    def test_stdio_defaults(self):
+        params = ConnectionParams(server_command="python -m server")
+        assert params.transport_type == TransportType.STDIO
+        assert params.server_command == "python -m server"
+        assert params.server_args == []
+        assert params.server_url is None
+        assert params.headers == {}
+
+    def test_remote_params(self):
+        params = ConnectionParams(
+            transport_type=TransportType.STREAMABLE_HTTP,
+            server_url="http://localhost:8080/mcp",
+            headers={"Authorization": "Bearer token"},
+        )
+        assert params.transport_type == TransportType.STREAMABLE_HTTP
+        assert params.server_url == "http://localhost:8080/mcp"
+        assert params.headers["Authorization"] == "Bearer token"
+
+    def test_display_target_with_url(self):
+        params = ConnectionParams(
+            transport_type=TransportType.SSE,
+            server_url="http://example.com/sse",
+        )
+        assert params.display_target() == "http://example.com/sse"
+
+    def test_display_target_with_command(self):
+        params = ConnectionParams(
+            server_command="python",
+            server_args=["-m", "server"],
+        )
+        assert params.display_target() == "python -m server"
+
+    def test_display_target_unknown(self):
+        params = ConnectionParams()
+        assert params.display_target() == "(unknown)"
 
 
 class TestSessionStatus:
@@ -113,16 +164,31 @@ class TestTraceSession:
         assert session.finished_at is None
         assert session.task_success is None
         assert session.summary is None
+        assert session.transport_type == TransportType.STDIO
+        assert session.server_url is None
 
     def test_defaults(self):
         session = TraceSession(
             id="sess-002",
-            server_command="python -m server",
-            server_args=[],
             started_at="2026-01-01T00:00:00Z",
         )
+        assert session.server_command is None
+        assert session.server_args == []
+        assert session.transport_type == TransportType.STDIO
+        assert session.server_url is None
         assert session.scenario_id is None
         assert session.status == SessionStatus.RUNNING
+
+    def test_remote_session(self):
+        session = TraceSession(
+            id="sess-003",
+            transport_type=TransportType.STREAMABLE_HTTP,
+            server_url="http://localhost:8080/mcp",
+            started_at="2026-01-01T00:00:00Z",
+        )
+        assert session.transport_type == TransportType.STREAMABLE_HTTP
+        assert session.server_url == "http://localhost:8080/mcp"
+        assert session.server_command is None
 
 
 class TestSeverity:

@@ -7,6 +7,7 @@ from uuid import uuid4
 from mcp_gauge.exceptions import TraceNotFoundError
 from mcp_gauge.infra.storage import TraceStorage
 from mcp_gauge.models.trace import (
+    ConnectionParams,
     SessionStatus,
     TraceRecord,
     TraceSession,
@@ -83,8 +84,7 @@ class TraceEngine:
 
     async def start_session(
         self,
-        server_command: str,
-        server_args: list[str] | None = None,
+        params: ConnectionParams,
         scenario_id: str | None = None,
     ) -> str:
         """トレースセッションを開始しtrace_idを返す。"""
@@ -92,8 +92,10 @@ class TraceEngine:
         now = datetime.now(UTC).isoformat()
         session = TraceSession(
             id=session_id,
-            server_command=server_command,
-            server_args=server_args or [],
+            server_command=params.server_command,
+            server_args=params.server_args,
+            transport_type=params.transport_type,
+            server_url=params.server_url,
             scenario_id=scenario_id,
             status=SessionStatus.RUNNING,
             started_at=now,

@@ -11,7 +11,7 @@ from mcp_gauge.engines.trace import (
     detect_redundant_calls,
 )
 from mcp_gauge.exceptions import TraceNotFoundError
-from mcp_gauge.models.trace import TraceRecord
+from mcp_gauge.models.trace import ConnectionParams, TraceRecord
 
 
 def _make_record(
@@ -210,14 +210,18 @@ class TestTraceEngine:
 
     async def test_start_session(self, engine, mock_storage):
         """セッション開始でIDが返される。"""
-        session_id = await engine.start_session("python -m server")
+        session_id = await engine.start_session(
+            ConnectionParams(server_command="python -m server"),
+        )
         assert isinstance(session_id, str)
         assert len(session_id) > 0
         mock_storage.save_session.assert_called_once()
 
     async def test_record_call(self, engine, mock_storage):
         """ツール呼び出しが記録される。"""
-        session_id = await engine.start_session("python -m server")
+        session_id = await engine.start_session(
+            ConnectionParams(server_command="python -m server"),
+        )
         record = await engine.record_call(
             session_id=session_id,
             tool_name="create",
@@ -244,7 +248,9 @@ class TestTraceEngine:
 
     async def test_stop_session(self, engine, mock_storage):
         """セッション終了でサマリーが返される。"""
-        session_id = await engine.start_session("python -m server")
+        session_id = await engine.start_session(
+            ConnectionParams(server_command="python -m server"),
+        )
         summary = await engine.stop_session(session_id)
         assert summary.total_calls == 0
         mock_storage.update_session_status.assert_called_once()
@@ -257,7 +263,9 @@ class TestTraceEngine:
 
     async def test_calculate_summary_with_records(self, engine, mock_storage):
         """レコード付きのサマリー計算。"""
-        session_id = await engine.start_session("python -m server")
+        session_id = await engine.start_session(
+            ConnectionParams(server_command="python -m server"),
+        )
         records = [
             _make_record(1, "create", {"name": "test"}),
             _make_record(2, "list"),
@@ -273,7 +281,9 @@ class TestTraceEngine:
 
     async def test_sequence_counter_increments(self, engine, mock_storage):
         """シーケンス番号がインクリメントされる。"""
-        session_id = await engine.start_session("python -m server")
+        session_id = await engine.start_session(
+            ConnectionParams(server_command="python -m server"),
+        )
         r1 = await engine.record_call(session_id, "create", {}, {}, False, 10.0)
         r2 = await engine.record_call(session_id, "list", {}, {}, False, 20.0)
         assert r1.sequence == 1

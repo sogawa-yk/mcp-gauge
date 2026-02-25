@@ -7,6 +7,7 @@ from mcp.types import Tool
 
 from mcp_gauge.infra.mcp_client import MCPClientWrapper
 from mcp_gauge.models.lint import LintResult, Severity
+from mcp_gauge.models.trace import ConnectionParams
 
 # 曖昧表現の検出パターン
 AMBIGUOUS_PATTERNS: list[tuple[str, str]] = [
@@ -234,8 +235,7 @@ class LintEngine:
 
     async def lint(
         self,
-        server_command: str,
-        server_args: list[str] | None = None,
+        params: ConnectionParams,
         timeout_sec: int = 30,
     ) -> tuple[list[LintResult], int]:
         """対象サーバーのツールをリンティングする。
@@ -245,7 +245,7 @@ class LintEngine:
         """
         client = MCPClientWrapper(timeout_sec=timeout_sec)
         try:
-            tools = await client.connect(server_command, server_args)
+            tools = await client.connect(params)
             return self._apply_rules(tools), len(tools)
         finally:
             await client.close()

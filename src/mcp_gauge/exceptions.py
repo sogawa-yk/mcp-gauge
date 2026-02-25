@@ -8,10 +8,10 @@ class GaugeError(Exception):
 class ServerConnectionError(GaugeError):
     """対象MCPサーバーへの接続失敗。"""
 
-    def __init__(self, server_command: str, cause: Exception | None = None) -> None:
-        self.server_command = server_command
+    def __init__(self, target: str, cause: Exception | None = None) -> None:
+        self.target = target
         self.cause = cause
-        super().__init__(f"対象サーバーへの接続に失敗しました: {server_command}")
+        super().__init__(f"対象サーバーへの接続に失敗しました: {target}")
 
 
 class InvalidScenarioError(GaugeError):

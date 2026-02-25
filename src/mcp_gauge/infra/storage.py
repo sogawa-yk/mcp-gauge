@@ -12,13 +12,16 @@ from mcp_gauge.models.trace import (
     TraceRecord,
     TraceSession,
     TraceSummary,
+    TransportType,
 )
 
 _CREATE_TABLES_SQL = """
 CREATE TABLE IF NOT EXISTS trace_sessions (
     id TEXT PRIMARY KEY,
-    server_command TEXT NOT NULL,
+    server_command TEXT,
     server_args TEXT,
+    transport_type TEXT NOT NULL DEFAULT 'stdio',
+    server_url TEXT,
     scenario_id TEXT,
     status TEXT NOT NULL DEFAULT 'running',
     started_at TEXT NOT NULL,
@@ -68,6 +71,7 @@ class TraceStorage:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("PRAGMA journal_mode=WAL")
             await db.executescript(_CREATE_TABLES_SQL)
+            await self._migrate(db)
             await db.commit()
 
         # パーミッション600
@@ -75,6 +79,21 @@ class TraceStorage:
 
         with contextlib.suppress(OSError):
             os.chmod(self.db_path, 0o600)
+
+    async def _migrate(self, db: aiosqlite.Connection) -> None:
+        """既存DBに新カラムを追加するマイグレーション。"""
+        cursor = await db.execute("PRAGMA table_info(trace_sessions)")
+        columns = {row[1] for row in await cursor.fetchall()}
+
+        if "transport_type" not in columns:
+            await db.execute(
+                "ALTER TABLE trace_sessions "
+                "ADD COLUMN transport_type TEXT NOT NULL DEFAULT 'stdio'"
+            )
+        if "server_url" not in columns:
+            await db.execute(
+                "ALTER TABLE trace_sessions ADD COLUMN server_url TEXT"
+            )
 
     async def recover_sessions(self) -> int:
         """status='running'のセッションを'failed'に更新する。"""
@@ -91,13 +110,16 @@ class TraceStorage:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 "INSERT INTO trace_sessions "
-                "(id, server_command, server_args, scenario_id, "
+                "(id, server_command, server_args, transport_type, "
+                "server_url, scenario_id, "
                 "status, started_at, finished_at, task_success) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     session.id,
                     session.server_command,
                     json.dumps(session.server_args),
+                    session.transport_type.value,
+                    session.server_url,
                     session.scenario_id,
                     session.status.value,
                     session.started_at,
@@ -195,6 +217,8 @@ class TraceStorage:
                 id=row["id"],
                 server_command=row["server_command"],
                 server_args=json.loads(row["server_args"] or "[]"),
+                transport_type=TransportType(row["transport_type"]),
+                server_url=row["server_url"],
                 scenario_id=row["scenario_id"],
                 status=SessionStatus(row["status"]),
                 started_at=row["started_at"],

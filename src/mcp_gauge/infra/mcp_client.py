@@ -4,11 +4,15 @@ import asyncio
 import time
 from typing import Any
 
+import httpx
 from mcp import ClientSession, StdioServerParameters
+from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
+from mcp.client.streamable_http import streamable_http_client
 from mcp.types import Tool
 
 from mcp_gauge.exceptions import ServerConnectionError
+from mcp_gauge.models.trace import ConnectionParams, TransportType
 
 
 class MCPClientWrapper:
@@ -20,20 +24,19 @@ class MCPClientWrapper:
         self._read_stream: Any = None
         self._write_stream: Any = None
         self._cm: Any = None
+        self._http_client: httpx.AsyncClient | None = None
 
-    async def connect(
-        self,
-        server_command: str,
-        server_args: list[str] | None = None,
-    ) -> list[Tool]:
+    async def connect(self, params: ConnectionParams) -> list[Tool]:
         """対象サーバーに接続し、ツール一覧を返す。"""
+        target = params.display_target()
         try:
-            server_params = StdioServerParameters(
-                command=server_command,
-                args=server_args or [],
-            )
-            self._cm = stdio_client(server_params)
-            self._read_stream, self._write_stream = await self._cm.__aenter__()
+            if params.transport_type == TransportType.STDIO:
+                await self._connect_stdio(params)
+            elif params.transport_type == TransportType.SSE:
+                await self._connect_sse(params)
+            elif params.transport_type == TransportType.STREAMABLE_HTTP:
+                await self._connect_streamable_http(params)
+
             self._session = ClientSession(self._read_stream, self._write_stream)
             await self._session.__aenter__()
             await asyncio.wait_for(
@@ -42,10 +45,52 @@ class MCPClientWrapper:
             )
             result = await self._session.list_tools()
             return result.tools
+        except ServerConnectionError:
+            raise
         except TimeoutError as e:
-            raise ServerConnectionError(server_command, cause=e) from e
+            raise ServerConnectionError(target, cause=e) from e
         except Exception as e:
-            raise ServerConnectionError(server_command, cause=e) from e
+            raise ServerConnectionError(target, cause=e) from e
+
+    async def _connect_stdio(self, params: ConnectionParams) -> None:
+        """stdio トランスポートで接続する。"""
+        assert params.server_command is not None
+        server_params = StdioServerParameters(
+            command=params.server_command,
+            args=params.server_args,
+        )
+        self._cm = stdio_client(server_params)
+        self._read_stream, self._write_stream = await self._cm.__aenter__()
+
+    async def _connect_sse(self, params: ConnectionParams) -> None:
+        """SSE トランスポートで接続する。"""
+        assert params.server_url is not None
+        self._cm = sse_client(
+            url=params.server_url,
+            headers=params.headers if params.headers else None,
+        )
+        self._read_stream, self._write_stream = await self._cm.__aenter__()
+
+    async def _connect_streamable_http(
+        self, params: ConnectionParams
+    ) -> None:
+        """Streamable HTTP トランスポートで接続する。"""
+        assert params.server_url is not None
+        http_client: httpx.AsyncClient | None = None
+        if params.headers:
+            http_client = httpx.AsyncClient(
+                headers=params.headers,
+            )
+            self._http_client = http_client
+        self._cm = streamable_http_client(
+            url=params.server_url,
+            http_client=http_client,
+        )
+        streams = await self._cm.__aenter__()
+        # streamable_http_client returns 3-tuple:
+        # (read, write, get_session_id)
+        self._read_stream = streams[0]
+        self._write_stream = streams[1]
 
     async def call_tool(
         self, tool_name: str, arguments: dict[str, Any]
@@ -84,3 +129,7 @@ class MCPClientWrapper:
             with contextlib.suppress(Exception):
                 await self._cm.__aexit__(None, None, None)
             self._cm = None
+        if self._http_client is not None:
+            with contextlib.suppress(Exception):
+                await self._http_client.aclose()
+            self._http_client = None

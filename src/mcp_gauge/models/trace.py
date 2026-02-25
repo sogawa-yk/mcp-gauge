@@ -14,6 +14,33 @@ class SessionStatus(StrEnum):
     FAILED = "failed"
 
 
+class TransportType(StrEnum):
+    """MCPトランスポートの種類。"""
+
+    STDIO = "stdio"
+    SSE = "sse"
+    STREAMABLE_HTTP = "streamable_http"
+
+
+class ConnectionParams(BaseModel):
+    """MCP接続パラメータ。"""
+
+    transport_type: TransportType = TransportType.STDIO
+    server_command: str | None = None
+    server_args: list[str] = []
+    server_url: str | None = None
+    headers: dict[str, str] = {}
+
+    def display_target(self) -> str:
+        """ログ/エラー用の接続先表示名を返す。"""
+        if self.server_url:
+            return self.server_url
+        if self.server_command:
+            parts = [self.server_command, *self.server_args]
+            return " ".join(parts)
+        return "(unknown)"
+
+
 class TraceRecord(BaseModel):
     """個別のツール呼び出し記録。"""
 
@@ -44,8 +71,10 @@ class TraceSession(BaseModel):
     """テスト実行の単位。"""
 
     id: str
-    server_command: str
-    server_args: list[str]
+    server_command: str | None = None
+    server_args: list[str] = []
+    transport_type: TransportType = TransportType.STDIO
+    server_url: str | None = None
     scenario_id: str | None = None
     status: SessionStatus = SessionStatus.RUNNING
     started_at: str

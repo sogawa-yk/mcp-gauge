@@ -6,7 +6,7 @@ import pytest
 
 from mcp_gauge.engines.session import SessionManager
 from mcp_gauge.exceptions import SessionNotFoundError
-from mcp_gauge.models.trace import TraceSummary
+from mcp_gauge.models.trace import ConnectionParams, TraceSummary
 
 
 def _make_mock_trace_engine() -> AsyncMock:
@@ -50,13 +50,14 @@ class TestConnect:
         manager = SessionManager(trace_engine, mcp_timeout_sec=10)
 
         mock_tool = _make_mock_tool()
+        params = ConnectionParams(server_command="python -m server")
 
         with patch("mcp_gauge.engines.session.MCPClientWrapper") as MockClient:
             mock_client = AsyncMock()
             mock_client.connect = AsyncMock(return_value=[mock_tool])
             MockClient.return_value = mock_client
 
-            session_id, tools = await manager.connect("python -m server")
+            session_id, tools = await manager.connect(params)
 
         assert session_id == "sess-001"
         assert len(tools) == 1
@@ -68,13 +69,14 @@ class TestConnect:
         """接続後にクライアントが保持されること。"""
         trace_engine = _make_mock_trace_engine()
         manager = SessionManager(trace_engine)
+        params = ConnectionParams(server_command="python -m server")
 
         with patch("mcp_gauge.engines.session.MCPClientWrapper") as MockClient:
             mock_client = AsyncMock()
             mock_client.connect = AsyncMock(return_value=[])
             MockClient.return_value = mock_client
 
-            session_id, _ = await manager.connect("python -m server")
+            session_id, _ = await manager.connect(params)
 
         assert session_id in manager._clients
 

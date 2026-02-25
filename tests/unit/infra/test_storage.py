@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import aiosqlite
 import pytest
 
 from mcp_gauge.exceptions import TraceNotFoundError
@@ -11,6 +12,7 @@ from mcp_gauge.models.trace import (
     TraceRecord,
     TraceSession,
     TraceSummary,
+    TransportType,
 )
 
 
@@ -108,7 +110,24 @@ class TestSaveAndGetSession:
         assert result.id == "sess-001"
         assert result.server_command == "python -m server"
         assert result.server_args == ["--port", "8080"]
+        assert result.transport_type == TransportType.STDIO
+        assert result.server_url is None
         assert result.status == SessionStatus.RUNNING
+
+    async def test_save_and_get_remote_session(self, storage: TraceStorage):
+        """リモートセッションを保存して取得できること。"""
+        session = TraceSession(
+            id="sess-remote",
+            transport_type=TransportType.STREAMABLE_HTTP,
+            server_url="http://localhost:8080/mcp",
+            status=SessionStatus.RUNNING,
+            started_at="2026-01-01T00:00:00Z",
+        )
+        await storage.save_session(session)
+        result = await storage.get_session("sess-remote")
+        assert result.transport_type == TransportType.STREAMABLE_HTTP
+        assert result.server_url == "http://localhost:8080/mcp"
+        assert result.server_command is None
 
     async def test_get_nonexistent_raises(self, storage: TraceStorage):
         """存在しないセッションでTraceNotFoundErrorが発生すること。"""
@@ -216,3 +235,107 @@ class TestRecoverSessions:
         await storage.save_session(_make_session("sess-001", SessionStatus.COMPLETED))
         count = await storage.recover_sessions()
         assert count == 0
+
+
+class TestMigration:
+    """スキーママイグレーションのテスト。"""
+
+    async def test_migrate_adds_new_columns(self, tmp_path: Path):
+        """旧スキーマDBにtransport_typeとserver_urlカラムが追加されること。"""
+        db_path = str(tmp_path / "old.db")
+        # 旧スキーマでDBを作成
+        old_sql = """
+        CREATE TABLE IF NOT EXISTS trace_sessions (
+            id TEXT PRIMARY KEY,
+            server_command TEXT NOT NULL,
+            server_args TEXT,
+            scenario_id TEXT,
+            status TEXT NOT NULL DEFAULT 'running',
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            task_success INTEGER
+        );
+        """
+        async with aiosqlite.connect(db_path) as db:
+            await db.executescript(old_sql)
+            await db.execute(
+                "INSERT INTO trace_sessions "
+                "(id, server_command, server_args, status, started_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    "sess-old", "python -m server", "[]",
+                    "running", "2026-01-01T00:00:00Z",
+                ),
+            )
+            await db.commit()
+
+        # init_dbでマイグレーションが実行される
+        storage = TraceStorage(db_path)
+        await storage.init_db()
+
+        # 新カラムが追加されていること
+        async with aiosqlite.connect(db_path) as db:
+            cursor = await db.execute("PRAGMA table_info(trace_sessions)")
+            columns = {row[1] for row in await cursor.fetchall()}
+            assert "transport_type" in columns
+            assert "server_url" in columns
+
+    async def test_migrate_preserves_existing_data(self, tmp_path: Path):
+        """マイグレーション後も既存データが読み取れること。"""
+        db_path = str(tmp_path / "old2.db")
+        old_sql = """
+        CREATE TABLE IF NOT EXISTS trace_sessions (
+            id TEXT PRIMARY KEY,
+            server_command TEXT NOT NULL,
+            server_args TEXT,
+            scenario_id TEXT,
+            status TEXT NOT NULL DEFAULT 'running',
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            task_success INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS trace_records (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL REFERENCES trace_sessions(id),
+            sequence INTEGER NOT NULL,
+            tool_name TEXT NOT NULL,
+            arguments TEXT NOT NULL,
+            result TEXT NOT NULL,
+            is_error INTEGER NOT NULL DEFAULT 0,
+            duration_ms REAL NOT NULL,
+            timestamp TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS trace_summaries (
+            session_id TEXT PRIMARY KEY REFERENCES trace_sessions(id),
+            total_calls INTEGER NOT NULL,
+            unique_tools INTEGER NOT NULL,
+            error_count INTEGER NOT NULL,
+            redundant_calls INTEGER NOT NULL,
+            total_duration_ms REAL NOT NULL,
+            recovery_steps INTEGER NOT NULL,
+            tool_call_sequence TEXT NOT NULL
+        );
+        """
+        async with aiosqlite.connect(db_path) as db:
+            await db.executescript(old_sql)
+            await db.execute(
+                "INSERT INTO trace_sessions "
+                "(id, server_command, server_args, status, started_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    "sess-old",
+                    "python -m server",
+                    '["--port", "8080"]',
+                    "completed",
+                    "2026-01-01T00:00:00Z",
+                ),
+            )
+            await db.commit()
+
+        storage = TraceStorage(db_path)
+        await storage.init_db()
+
+        result = await storage.get_session("sess-old")
+        assert result.server_command == "python -m server"
+        assert result.transport_type == TransportType.STDIO
+        assert result.server_url is None

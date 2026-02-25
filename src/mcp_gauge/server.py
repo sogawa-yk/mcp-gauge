@@ -22,6 +22,7 @@ from mcp_gauge.exceptions import (
 )
 from mcp_gauge.infra.storage import TraceStorage
 from mcp_gauge.models.scenario import SuccessCriteria
+from mcp_gauge.models.trace import ConnectionParams, TransportType
 
 
 class GaugeServer:
@@ -63,7 +64,10 @@ class GaugeServer:
                         "properties": {
                             "server_command": {
                                 "type": "string",
-                                "description": ("対象MCPサーバーの起動コマンド"),
+                                "description": (
+                                    "対象MCPサーバーの起動コマンド"
+                                    "（stdioトランスポート時に必須）"
+                                ),
                             },
                             "server_args": {
                                 "type": "array",
@@ -72,8 +76,30 @@ class GaugeServer:
                                     "対象MCPサーバーの起動引数。デフォルト: []"
                                 ),
                             },
+                            "server_url": {
+                                "type": "string",
+                                "description": (
+                                    "リモートMCPサーバーのURL"
+                                    "（sse/streamable_httpトランスポート時に必須）"
+                                ),
+                            },
+                            "transport_type": {
+                                "type": "string",
+                                "enum": ["stdio", "sse", "streamable_http"],
+                                "description": (
+                                    "トランスポートの種類。"
+                                    "デフォルト: server_url指定時は"
+                                    "streamable_http、それ以外はstdio"
+                                ),
+                            },
+                            "headers": {
+                                "type": "object",
+                                "description": (
+                                    "リモート接続時のHTTPヘッダー。"
+                                    "デフォルト: {}"
+                                ),
+                            },
                         },
-                        "required": ["server_command"],
                     },
                 ),
                 Tool(
@@ -89,7 +115,10 @@ class GaugeServer:
                         "properties": {
                             "server_command": {
                                 "type": "string",
-                                "description": ("対象MCPサーバーの起動コマンド"),
+                                "description": (
+                                    "対象MCPサーバーの起動コマンド"
+                                    "（stdioトランスポート時に必須）"
+                                ),
                             },
                             "server_args": {
                                 "type": "array",
@@ -98,12 +127,34 @@ class GaugeServer:
                                     "対象MCPサーバーの起動引数。デフォルト: []"
                                 ),
                             },
+                            "server_url": {
+                                "type": "string",
+                                "description": (
+                                    "リモートMCPサーバーのURL"
+                                    "（sse/streamable_httpトランスポート時に必須）"
+                                ),
+                            },
+                            "transport_type": {
+                                "type": "string",
+                                "enum": ["stdio", "sse", "streamable_http"],
+                                "description": (
+                                    "トランスポートの種類。"
+                                    "デフォルト: server_url指定時は"
+                                    "streamable_http、それ以外はstdio"
+                                ),
+                            },
+                            "headers": {
+                                "type": "object",
+                                "description": (
+                                    "リモート接続時のHTTPヘッダー。"
+                                    "デフォルト: {}"
+                                ),
+                            },
                             "scenario_id": {
                                 "type": "string",
                                 "description": ("紐づけるシナリオID（任意）"),
                             },
                         },
-                        "required": ["server_command"],
                     },
                 ),
                 Tool(
@@ -263,7 +314,7 @@ class GaugeServer:
                 return self._error_response(
                     "connection_failed",
                     str(e),
-                    "server_commandとserver_argsを確認してください",
+                    "server_command/server_urlと接続パラメータを確認してください",
                 )
             except SessionNotFoundError as e:
                 return self._error_response(
@@ -336,12 +387,48 @@ class GaugeServer:
         result: dict[str, Any] = await handler(arguments)
         return result
 
+    @staticmethod
+    def _build_connection_params(arguments: dict[str, Any]) -> ConnectionParams:
+        """ツール引数からConnectionParamsを構築する。"""
+        server_command = arguments.get("server_command")
+        server_url = arguments.get("server_url")
+        transport_type_str = arguments.get("transport_type")
+        headers = arguments.get("headers", {})
+        server_args = arguments.get("server_args", [])
+
+        if transport_type_str:
+            transport_type = TransportType(transport_type_str)
+        elif server_url:
+            transport_type = TransportType.STREAMABLE_HTTP
+        else:
+            transport_type = TransportType.STDIO
+
+        if transport_type == TransportType.STDIO and not server_command:
+            raise InvalidScenarioError(
+                "server_command",
+                "stdioトランスポートではserver_commandが必須です",
+            )
+        if transport_type in (
+            TransportType.SSE,
+            TransportType.STREAMABLE_HTTP,
+        ) and not server_url:
+            raise InvalidScenarioError(
+                "server_url",
+                f"{transport_type}トランスポートではserver_urlが必須です",
+            )
+
+        return ConnectionParams(
+            transport_type=transport_type,
+            server_command=server_command,
+            server_args=server_args,
+            server_url=server_url,
+            headers=headers,
+        )
+
     async def _handle_lint(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        server_command = arguments["server_command"]
-        server_args = arguments.get("server_args")
+        params = self._build_connection_params(arguments)
         results, total_tools = await self.lint_engine.lint(
-            server_command,
-            server_args,
+            params,
             timeout_sec=self.config.mcp_timeout_sec,
         )
         return {
@@ -351,11 +438,10 @@ class GaugeServer:
         }
 
     async def _handle_connect(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        server_command = arguments["server_command"]
-        server_args = arguments.get("server_args")
+        params = self._build_connection_params(arguments)
         scenario_id = arguments.get("scenario_id")
         session_id, tools = await self.session_manager.connect(
-            server_command, server_args, scenario_id
+            params, scenario_id
         )
         return {"session_id": session_id, "tools": tools}
 

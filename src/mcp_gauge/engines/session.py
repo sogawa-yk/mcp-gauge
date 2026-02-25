@@ -5,7 +5,7 @@ from typing import Any
 from mcp_gauge.engines.trace import TraceEngine
 from mcp_gauge.exceptions import SessionNotFoundError
 from mcp_gauge.infra.mcp_client import MCPClientWrapper
-from mcp_gauge.models.trace import TraceSummary
+from mcp_gauge.models.trace import ConnectionParams, TraceSummary
 
 
 class SessionManager:
@@ -26,16 +26,15 @@ class SessionManager:
 
     async def connect(
         self,
-        server_command: str,
-        server_args: list[str] | None = None,
+        params: ConnectionParams,
         scenario_id: str | None = None,
     ) -> tuple[str, list[dict[str, Any]]]:
         """対象サーバーに接続し、(session_id, tools)を返す。"""
         client = MCPClientWrapper(timeout_sec=self.mcp_timeout_sec)
-        tools = await client.connect(server_command, server_args)
+        tools = await client.connect(params)
 
         session_id = await self.trace_engine.start_session(
-            server_command, server_args, scenario_id
+            params, scenario_id
         )
         self._clients[session_id] = client
 
