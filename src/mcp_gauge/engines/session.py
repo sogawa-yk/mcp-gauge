@@ -19,9 +19,11 @@ class SessionManager:
         self,
         trace_engine: TraceEngine,
         mcp_timeout_sec: int = 30,
+        mcp_tool_timeout_sec: int = 300,
     ) -> None:
         self.trace_engine = trace_engine
         self.mcp_timeout_sec = mcp_timeout_sec
+        self.mcp_tool_timeout_sec = mcp_tool_timeout_sec
         self._clients: dict[str, MCPClientWrapper] = {}
 
     async def connect(
@@ -30,7 +32,10 @@ class SessionManager:
         scenario_id: str | None = None,
     ) -> tuple[str, list[dict[str, Any]]]:
         """対象サーバーに接続し、(session_id, tools)を返す。"""
-        client = MCPClientWrapper(timeout_sec=self.mcp_timeout_sec)
+        client = MCPClientWrapper(
+            timeout_sec=self.mcp_timeout_sec,
+            tool_call_timeout_sec=self.mcp_tool_timeout_sec,
+        )
         tools = await client.connect(params)
 
         session_id = await self.trace_engine.start_session(params, scenario_id)

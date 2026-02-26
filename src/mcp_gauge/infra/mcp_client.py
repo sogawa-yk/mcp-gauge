@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import os
 import time
+from datetime import timedelta
 from typing import Any
 
 import httpx
@@ -11,9 +12,14 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
+from mcp.shared.exceptions import McpError
 from mcp.types import Tool
 
-from mcp_gauge.exceptions import ServerConnectionError
+from mcp_gauge.exceptions import (
+    ConnectionLostError,
+    ServerConnectionError,
+    ToolCallTimeoutError,
+)
 from mcp_gauge.models.trace import ConnectionParams, TransportType
 
 
@@ -25,8 +31,11 @@ class MCPClientWrapper:
     コンテキストマネージャを正しく async with で管理する。
     """
 
-    def __init__(self, timeout_sec: int = 30) -> None:
+    def __init__(
+        self, timeout_sec: int = 30, tool_call_timeout_sec: int = 300
+    ) -> None:
         self.timeout_sec = timeout_sec
+        self.tool_call_timeout_sec = tool_call_timeout_sec
         self._session: ClientSession | None = None
         self._tools: list[Tool] = []
         self._error: BaseException | None = None
@@ -157,8 +166,24 @@ class MCPClientWrapper:
         if self._session is None:
             raise RuntimeError("Not connected")
 
+        if self._bg_task is not None and self._bg_task.done():
+            raise ConnectionLostError(tool_name)
+
         start = time.perf_counter()
-        result = await self._session.call_tool(tool_name, arguments)
+        try:
+            result = await self._session.call_tool(
+                tool_name,
+                arguments,
+                read_timeout_seconds=timedelta(
+                    seconds=self.tool_call_timeout_sec
+                ),
+            )
+        except McpError as e:
+            if e.error.code == 408:
+                raise ToolCallTimeoutError(
+                    tool_name, self.tool_call_timeout_sec
+                ) from e
+            raise
         duration_ms = (time.perf_counter() - start) * 1000
 
         is_error = result.isError or False

@@ -110,6 +110,7 @@ Claude Codeの場合、`.mcp.json` に以下を追加します。
 |--------|------|-----------|
 | `MCP_GAUGE_DB_PATH` | トレースデータの保存先 | `~/.mcp-gauge/gauge.db` |
 | `MCP_GAUGE_TIMEOUT` | MCP接続タイムアウト（秒） | `30` |
+| `MCP_GAUGE_TOOL_TIMEOUT` | ツール呼び出しタイムアウト（秒） | `300` |
 
 ## 使い方
 

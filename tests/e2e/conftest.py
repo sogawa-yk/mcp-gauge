@@ -85,7 +85,7 @@ async def http_mock_server_url() -> AsyncGenerator[str, None]:
 async def gauge_server(tmp_path: Path) -> AsyncGenerator[GaugeServer, None]:
     """初期化済みのGaugeServerインスタンスを返す。"""
     db_path = str(tmp_path / "test_gauge.db")
-    config = GaugeConfig(db_path=db_path, mcp_timeout_sec=30)
+    config = GaugeConfig(db_path=db_path, mcp_timeout_sec=30, mcp_tool_timeout_sec=300)
     server = GaugeServer(config)
     await server.initialize()
     try:

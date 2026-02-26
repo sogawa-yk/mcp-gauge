@@ -6,6 +6,7 @@
 
 import json as _json
 
+from mcp.server.fastmcp.prompts.base import Prompt as FastMCPPrompt
 from mcp.types import (
     GetPromptResult,
     Prompt,
@@ -570,3 +571,90 @@ gauge_compare({{
             ),
         ],
     )
+
+
+# ---------------------------------------------------------------------------
+# FastMCP Prompt ラッパー
+# ---------------------------------------------------------------------------
+
+
+def _wrap_dev_workflow(
+    task_description: str,
+    server_command: str | None = None,
+    server_args: str | None = None,
+    server_url: str | None = None,
+) -> str:
+    """mcp-server-dev-workflowプロンプトのFastMCPラッパー。"""
+    args: dict[str, str] = {"task_description": task_description}
+    if server_command is not None:
+        args["server_command"] = server_command
+    if server_args is not None:
+        args["server_args"] = server_args
+    if server_url is not None:
+        args["server_url"] = server_url
+    result = _generate_dev_workflow(args)
+    content = result.messages[0].content
+    assert isinstance(content, TextContent)
+    return content.text
+
+
+def _wrap_fix_quality(
+    lint_json: str | None = None,
+) -> str:
+    """fix-quality-issuesプロンプトのFastMCPラッパー。"""
+    args: dict[str, str] = {}
+    if lint_json is not None:
+        args["lint_json"] = lint_json
+    result = _generate_fix_quality(args or None)
+    content = result.messages[0].content
+    assert isinstance(content, TextContent)
+    return content.text
+
+
+def _wrap_regression_test(
+    baseline_trace_id: str,
+    server_command: str | None = None,
+    server_args: str | None = None,
+    server_url: str | None = None,
+) -> str:
+    """regression-testプロンプトのFastMCPラッパー。"""
+    args: dict[str, str] = {"baseline_trace_id": baseline_trace_id}
+    if server_command is not None:
+        args["server_command"] = server_command
+    if server_args is not None:
+        args["server_args"] = server_args
+    if server_url is not None:
+        args["server_url"] = server_url
+    result = _generate_regression_test(args)
+    content = result.messages[0].content
+    assert isinstance(content, TextContent)
+    return content.text
+
+
+FASTMCP_PROMPTS: list[FastMCPPrompt] = [
+    FastMCPPrompt.from_function(
+        _wrap_dev_workflow,
+        name="mcp-server-dev-workflow",
+        description=(
+            "MCPサーバーのテスト・品質改善を自律的に実行するための"
+            "包括的ワークフロー。接続情報とタスク概要を渡すと、"
+            "lint→動的テスト→評価→改善の反復サイクルを案内する。"
+        ),
+    ),
+    FastMCPPrompt.from_function(
+        _wrap_fix_quality,
+        name="fix-quality-issues",
+        description=(
+            "gauge_lintで検出される全ルールと修正パターンのリファレンス。"
+            "lint結果を受け取り、各issueの具体的な修正方法を案内する。"
+        ),
+    ),
+    FastMCPPrompt.from_function(
+        _wrap_regression_test,
+        name="regression-test",
+        description=(
+            "MCPサーバーの変更前後を比較するリグレッションテストの"
+            "ワークフロー。ベースラインのtrace_idと接続情報を渡す。"
+        ),
+    ),
+]

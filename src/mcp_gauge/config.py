@@ -11,6 +11,7 @@ class GaugeConfig(BaseModel):
 
     db_path: str
     mcp_timeout_sec: int
+    mcp_tool_timeout_sec: int
 
     @classmethod
     def from_env(cls) -> "GaugeConfig":
@@ -19,4 +20,7 @@ class GaugeConfig(BaseModel):
         return cls(
             db_path=os.environ.get("MCP_GAUGE_DB_PATH", default_db_path),
             mcp_timeout_sec=int(os.environ.get("MCP_GAUGE_TIMEOUT", "30")),
+            mcp_tool_timeout_sec=int(
+                os.environ.get("MCP_GAUGE_TOOL_TIMEOUT", "300")
+            ),
         )

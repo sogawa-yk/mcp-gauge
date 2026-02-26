@@ -104,6 +104,7 @@ src/mcp_gauge/
 |---------|--------|------------|------|
 | MCP_GAUGE_DB_PATH | 環境変数 | ~/.mcp-gauge/gauge.db | SQLiteファイルパス |
 | MCP_GAUGE_TIMEOUT | 環境変数 | 30 | 対象サーバー接続タイムアウト（秒） |
+| MCP_GAUGE_TOOL_TIMEOUT | 環境変数 | 300 | ツール呼び出しタイムアウト（秒） |
 
 ## データ永続化戦略
 
